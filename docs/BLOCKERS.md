@@ -47,3 +47,7 @@ The v1 steps above still apply. v2 adds a second restart of the host (new binary
 ## v0/v1 peers and a v2 host (v2-M4)
 
 v2 adds a third synced document (shopping, wire kind 3). v0 and v1 builds close the connection when they receive a kind they do not know, which breaks sync of *all* documents with them. If a v0 desktop app or a v1 host is listed in `peers`, set `sync_shopping = false` in the v2 host's `config.toml`. Not tested against a real v0/v1 build (the old behaviour is read from the code, `crates/sync/src/lib.rs` at tag `v1`). Phones and laptops using the web app are unaffected.
+
+## `../Fruit-Deck-Builder` was not present (v3-M0)
+
+PLAN-v3 expects `GregFromIT/Fruit-Deck-Builder` as a sibling directory. At the start of the run `../` held only this repo (and an unrelated `LinuxTutorialGame`), so **v3-M6 (the deckbuilder changes on branch `household-integration`) was skipped**, and the parts of M7 that talk to the deckbuilder (build, prices, Archidekt) were built against the *contract* in PLAN-v3 §4.2 and tested with a fake deckbuilder server, not the real one. I did not clone it: that writes outside this repo, and the plan says to skip. To finish it, clone the repo next to this one and do §4.2 on a branch (the household side already expects `POST /api/build`, `POST /api/prices`, `GET /api/themes?commander=` and `GET /api/archidekt/deck/{id}` with the shapes in `docs/API.md` "MTG").

@@ -416,3 +416,7 @@ Not built, either because PLAN-v2 says not to or because it would have been more
 **Bugs found by checking, not by reading** (the reason each check was worth doing): a missing `Option` key rule in v1 (earlier); the 410 returning 422 for a stale body (M3 API test); `[object HTMLDivElement]` in the program builder (M3 browser); the chat screen dying with the server (M7 browser); a category that stuck to the next shopping item (M5 browser); "Mon" for "Monday" in the assistant's prompt (M6 test); a tied "most trained muscle" picked arbitrarily (M8 test); the sum of tool results not bounded (found by working the numbers for `LEARNING.md`, then fixed and tested, M8).
 
 **What was not tested** is in `README.md` ("What was not tested") and at the end of each milestone section; the biggest items are real phones, real `tailscale serve` (above all the live-update stream through it), a model other than the two measured, and old v0/v1 builds syncing with a v2 host.
+
+## Baseline (v3-M0, 2026-10-12)
+
+- Tag `v2` is the starting commit `14ed36a`. `cargo test --workspace`: 149 passed. PLAN-v3.md saved verbatim. The sibling deckbuilder repo is missing: see `BLOCKERS.md` ("`../Fruit-Deck-Builder` was not present"); M6 is skipped and the MTG build flow is built to the plan's contract and tested with a fake server.
