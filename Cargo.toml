@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/sync", "crates/todo-core", "crates/fitness-core", "crates/peer", "app/src-tauri"]
+members = ["crates/sync", "crates/todo-core", "crates/fitness-core", "crates/peer", "app/src-tauri", "crates/web"]
 
 [workspace.dependencies]
 automerge = "=0.12.0"
@@ -10,6 +10,8 @@ tokio = { version = "=1.53.2", features = ["net", "io-util", "rt-multi-thread", 
 serde = { version = "=1.0.229", features = ["derive"] }
 toml = "=1.1.8"
 serde_json = "=1.0.154"
+axum = "=0.8.9"
+chrono-tz = "=0.10.4"
 chrono = { version = "=0.4.45", default-features = false, features = ["std", "clock"] }
 tauri = "=2.12.3"
 tauri-build = "=2.7.2"

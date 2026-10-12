@@ -184,3 +184,54 @@ What happens under the hood: `peer todo add` loads `todo.automerge`, makes the c
 **Why store rules instead of the computed targets:** changing the base load or the rule changes all future weeks consistently, and there's nothing to keep in sync. The cost: changing a template mid-block also changes what past weeks "were". Logged sessions keep what was actually done (`block_id`, `block_week`, the sets), so history is still accurate.
 
 **Source:** chrono `NaiveDate` arithmetic: https://docs.rs/chrono/0.4.45/chrono/naive/struct.NaiveDate.html
+
+## v1.2 REST API design here, and why `PUT` with client IDs makes writes idempotent
+
+**What:** the API (`crates/web/src/api.rs`, `docs/API.md`) is resource-shaped: nouns in the path (`/todos/{id}`, `/sessions/{id}/sets/{set_id}`), and the HTTP method says what happens (`GET` read, `PUT` create, `PATCH` change some fields, `DELETE` remove, `POST` for actions that aren't plain field writes: `/complete`, `/finish`). Status codes carry the outcome, so a client can react without parsing text: 201 created, 200 OK, 204 no body, 400 your input, 401 who are you, 403 not yours, 404 no such thing, 409 clashes with what's there, 413/415 wrong shape of request.
+
+**Idempotent** means doing it twice has the same effect as doing it once. That matters because the network can fail *after* the server did the work but *before* the phone saw the response. The phone can't know whether the set was saved, so it must be able to send it again safely.
+- `POST /sessions/s1/sets` with a server-generated ID would create a second set on retry.
+- `PUT /sessions/s1/sets/<uuid>` with an ID the browser generated (`crypto.randomUUID()`) names the set before it exists. The retry carries the same ID; the server sees the set is already there with the same values and answers 200 without writing (`put_set` in `crates/fitness-core/src/lib.rs`). Different values under the same ID are a 409, never a silent overwrite.
+- HTTP itself defines `PUT` and `DELETE` as idempotent and `POST` as not (https://www.rfc-editor.org/rfc/rfc9110#section-9.2.2). Our `POST /finish` is made idempotent by the store (same status + note → no-op).
+
+**Test:** `repeated_put_is_a_no_op` (`crates/web/tests/api.rs`) checks that the second identical PUT leaves the Automerge heads unchanged.
+
+**Sources:** https://developer.mozilla.org/en-US/docs/Web/API/Crypto/randomUUID , https://developer.mozilla.org/en-US/docs/Web/HTTP/Status
+
+## v1.3 Reverse proxies and `tailscale serve`
+
+**What:** a reverse proxy accepts the browser's connection and forwards the request to a backend. `tailscale serve 7430` makes `https://<host>.<tailnet>.ts.net` (reachable only on the tailnet) forward to `http://127.0.0.1:7430`, where `peer serve` listens.
+
+**What it terminates:** TLS. The browser talks HTTPS to the Tailscale daemon on the host, which holds a real Let's Encrypt certificate for the `ts.net` name; the hop to our app is plain HTTP over loopback and never leaves the machine. The app has no TLS code and no certificates to manage.
+
+**What it adds:** identity headers. For requests from a tailnet user's device, Serve sets `Tailscale-User-Login` (plus `-Name`, `-Profile-Pic`) and removes any copies the client sent. So the app learns who's calling without passwords (`crates/web/src/identity.rs`).
+
+**Why the backend must bind localhost:** the headers are only trustworthy if *every* request passes through Serve. If `peer serve` listened on the tailnet IP, any tailnet device could connect directly and send `Tailscale-User-Login: alice@…` itself. Binding `127.0.0.1` means only processes on the host (i.e. Serve) can reach it. `AppState::new` refuses a non-loopback `[web] listen`.
+
+**Sources:** https://tailscale.com/docs/features/tailscale-serve#identity-headers , https://tailscale.com/docs/reference/tailscale-cli/serve
+
+## v1.4 CSRF through network identity, and the three defences
+
+**The attack:** you're on your phone, on the tailnet, and open some random web page. Its JavaScript (or a hidden form) can make *your* browser send a request to `https://host.tailnet.ts.net/api/v1/todos/x`. Your browser can reach that URL because you're on the tailnet, and Serve attaches *your* identity header. Classic CSRF abuses your cookies; here the "credential" is your network position plus Serve's header, attached just as automatically. The page can't read the response (same-origin policy), but it doesn't need to in order to create or delete things.
+
+**The defences** (`protect` in `crates/web/src/lib.rs`, tests in `crates/web/tests/api.rs`):
+1. **Writes require `Content-Type: application/json`.** A plain HTML form can only send `application/x-www-form-urlencoded`, `multipart/form-data` or `text/plain`. JavaScript `fetch` *can* send `application/json` cross-origin, but that makes it a non-"simple" request, so the browser first sends a CORS preflight (`OPTIONS`) and only proceeds if the server's answer allows it. Test `writes_need_json_content_type`.
+2. **No CORS headers, ever.** The server never answers a preflight with `Access-Control-Allow-Origin`, so the browser refuses to send the real cross-origin JSON request. `foreign_origin_is_rejected` checks no `access-control-*` header is sent.
+3. **`Origin` check.** Browsers send `Origin` on cross-origin writes; if it's present and not our configured origin, the server returns 403. A backstop in case 1–2 ever leak (e.g. a browser bug). Absent `Origin` (curl, same-origin GETs) is allowed.
+
+Plus `SameSite=Strict` on the picker cookie, so the browser doesn't send it on requests triggered from other sites at all.
+
+**Sources:** https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS#simple_requests , https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html
+
+## v1.6 Why conflicts mostly vanish with a single server, and where the CRDT still matters
+
+**What changed:** in v0 every device had its own copy and edited it offline, so two edits to the same todo could happen "at the same time" and Automerge had to merge them. In v1 both browsers talk to one `peer serve` process holding one copy of each doc behind a mutex. Requests are applied one after another; the second sees the first's result. Nothing needs merging: it behaves like an ordinary single-writer database.
+
+**Where the CRDT still matters:**
+- The host still runs v0 sync (`peer serve` = `peer run` + HTTP). A native peer (the frozen v0 Tauri app, a second `peer` on a NAS) can edit offline and sync later; those edits merge exactly as in v0.
+- Moving hosts: copy the `.automerge` files, or run two hosts for a while and let them sync. Nothing is lost.
+- The idempotency checks (`put_*`) are about *retries of the same request*, not concurrent edits. The CRDT doesn't help there, which is why they're separate.
+
+**The remaining "conflict":** last write wins between two browsers editing the same field seconds apart (e.g. both rename a template); the second `PATCH` overwrites the first. With two people in one house that's acceptable. The fix would be version checks (`If-Match` + ETags).
+
+**Source:** https://www.rfc-editor.org/rfc/rfc9110#name-if-match (the fix, not used)

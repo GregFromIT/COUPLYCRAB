@@ -8,3 +8,7 @@ sync = { path = "../sync" }
 todo-core = { path = "../todo-core" }
 fitness-core = { path = "../fitness-core" }
 tokio.workspace = true
+web = { path = "../web" }
+axum.workspace = true
+serde.workspace = true
+toml.workspace = true

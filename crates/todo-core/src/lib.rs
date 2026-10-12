@@ -34,6 +34,8 @@ struct TodoDoc {
 pub enum Error {
     NotFound(String),
     Invalid(String),
+    /// `put` with an existing ID but different title/notes/due.
+    Conflict(String),
     Automerge(String),
 }
 
@@ -58,6 +60,7 @@ impl std::fmt::Display for Error {
         match self {
             Error::NotFound(id) => write!(f, "todo {id} not found"),
             Error::Invalid(s) => write!(f, "invalid {s}"),
+            Error::Conflict(id) => write!(f, "todo {id} already exists with different content"),
             Error::Automerge(e) => write!(f, "automerge: {e}"),
         }
     }
@@ -74,6 +77,10 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Domain operations. The seam if the CRDT choice changes.
 pub trait TodoStore {
     fn add(&mut self, title: &str, notes: &str, due: Option<&str>) -> Result<Todo>;
+    /// Create with a caller-chosen ID. `Ok(true)` if created, `Ok(false)` if a todo
+    /// with this ID and the same title/notes/due exists (no change), `Conflict` otherwise.
+    fn put(&mut self, id: &str, title: &str, notes: &str, due: Option<&str>) -> Result<bool>;
+    fn get(&self, id: &str) -> Result<Todo>;
     fn edit(&mut self, id: &str, title: &str, notes: &str, due: Option<&str>) -> Result<()>;
     fn set_completed(&mut self, id: &str, completed: bool) -> Result<()>;
     fn delete(&mut self, id: &str) -> Result<()>;
@@ -128,7 +135,7 @@ impl AmTodoStore {
         }
     }
 
-    fn get(&self, id: &str) -> Result<Todo> {
+    fn find(&self, id: &str) -> Result<Todo> {
         let obj = self.todos_obj()?;
         if self.doc.get(&obj, id)?.is_none() {
             return Err(Error::NotFound(id.into()));
@@ -136,7 +143,7 @@ impl AmTodoStore {
         Ok(hydrate_prop(&self.doc, &obj, id)?)
     }
 
-    fn put(&mut self, todo: &Todo) -> Result<()> {
+    fn write(&mut self, todo: &Todo) -> Result<()> {
         let obj = self.todos_obj()?;
         self.doc
             .transact::<_, _, autosurgeon::ReconcileError>(|tx| reconcile_prop(tx, &obj, todo.id.as_str(), todo))
@@ -145,9 +152,9 @@ impl AmTodoStore {
     }
 
     fn modify(&mut self, id: &str, f: impl FnOnce(&mut Todo)) -> Result<()> {
-        let mut t = self.get(id)?;
+        let mut t = self.find(id)?;
         f(&mut t);
-        self.put(&t)
+        self.write(&t)
     }
 }
 
@@ -166,18 +173,35 @@ fn now_ms() -> i64 {
 
 impl TodoStore for AmTodoStore {
     fn add(&mut self, title: &str, notes: &str, due: Option<&str>) -> Result<Todo> {
+        let id = uuid::Uuid::now_v7().to_string();
+        self.put(&id, title, notes, due)?;
+        self.find(&id)
+    }
+
+    fn put(&mut self, id: &str, title: &str, notes: &str, due: Option<&str>) -> Result<bool> {
         check_due(due)?;
-        let todo = Todo {
-            id: uuid::Uuid::now_v7().to_string(),
-            title: title.into(),
-            notes: notes.into(),
-            due: due.map(Into::into),
-            completed: false,
-            deleted: false,
-            created_at: now_ms(),
-        };
-        self.put(&todo)?;
-        Ok(todo)
+        match self.find(id) {
+            Ok(t) if (t.title.as_str(), t.notes.as_str(), t.due.as_deref()) == (title, notes, due) => Ok(false),
+            Ok(_) => Err(Error::Conflict(id.into())),
+            Err(Error::NotFound(_)) => {
+                let todo = Todo {
+                    id: id.into(),
+                    title: title.into(),
+                    notes: notes.into(),
+                    due: due.map(Into::into),
+                    completed: false,
+                    deleted: false,
+                    created_at: now_ms(),
+                };
+                self.write(&todo)?;
+                Ok(true)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn get(&self, id: &str) -> Result<Todo> {
+        self.find(id)
     }
 
     fn edit(&mut self, id: &str, title: &str, notes: &str, due: Option<&str>) -> Result<()> {
@@ -240,6 +264,17 @@ mod tests {
         for bad in ["2026-13-01", "2026-1-01", "26-01-01", "2026-01-32", "２026-01-01", ""] {
             assert!(matches!(s.add("x", "", Some(bad)), Err(Error::Invalid(_))), "{bad}");
         }
+    }
+
+    #[test]
+    fn put_is_idempotent() {
+        let mut s = AmTodoStore::new();
+        assert!(s.put("t1", "milk", "", None).unwrap());
+        let heads = s.doc.get_heads();
+        assert!(!s.put("t1", "milk", "", None).unwrap());
+        assert_eq!(s.doc.get_heads(), heads);
+        assert!(matches!(s.put("t1", "bread", "", None), Err(Error::Conflict(_))));
+        assert_eq!(s.get("t1").unwrap().title, "milk");
     }
 
     #[test]

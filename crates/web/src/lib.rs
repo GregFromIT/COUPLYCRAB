@@ -1,0 +1,254 @@
+//! HTTP layer: JSON API under `/api/v1` (+ the embedded frontend, see `assets`).
+//!
+//! Every write: validate → mutate store → `AppState::saved` (atomic save + sync
+//! trigger, provided by the caller) → respond. See docs/API.md.
+
+mod api;
+mod assets;
+mod identity;
+
+pub use identity::decode_rfc2047;
+
+use axum::{
+    extract::{DefaultBodyLimit, FromRequest, Request, State},
+    http::{header, Method, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
+    Router,
+};
+use chrono::{DateTime, Utc};
+use fitness_core::FitnessStore;
+use serde::Deserialize;
+use std::{
+    collections::{BTreeSet, HashMap},
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+};
+use todo_core::TodoStore;
+
+pub const BODY_LIMIT: usize = 64 * 1024;
+
+/// `[web]` section of `config.toml`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct WebConfig {
+    /// Must be loopback: identity headers are only trustworthy if nothing but
+    /// `tailscale serve` can reach this port.
+    pub listen: SocketAddr,
+    /// IANA name, e.g. `Australia/Sydney`; "today" for `planned-day` etc.
+    pub timezone: String,
+    /// Tailscale login → user ID, or → list of user IDs for a shared account
+    /// (then the user picker chooses among them).
+    pub users: HashMap<String, OneOrMany>,
+    /// Allowed `Origin`s for writes. Default: `http://127.0.0.1:<port>` and
+    /// `http://localhost:<port>`. Add `https://<host>.<tailnet>.ts.net`.
+    pub origins: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum OneOrMany {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl OneOrMany {
+    pub fn ids(&self) -> Vec<String> {
+        match self {
+            OneOrMany::One(s) => vec![s.clone()],
+            OneOrMany::Many(v) => v.clone(),
+        }
+    }
+}
+
+impl Default for WebConfig {
+    fn default() -> Self {
+        WebConfig {
+            listen: SocketAddr::from(([127, 0, 0, 1], 7430)),
+            timezone: "UTC".into(),
+            users: HashMap::new(),
+            origins: vec![],
+        }
+    }
+}
+
+impl WebConfig {
+    pub fn allowed_origins(&self) -> Vec<String> {
+        if !self.origins.is_empty() {
+            return self.origins.clone();
+        }
+        let port = self.listen.port();
+        vec![format!("http://127.0.0.1:{port}"), format!("http://localhost:{port}")]
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocKind {
+    Todo,
+    Fitness,
+}
+
+pub type SavedHook = Arc<dyn Fn(DocKind) -> Result<(), String> + Send + Sync>;
+
+/// Shared by all handlers. Stores use `std::sync::Mutex`: the same lock is used
+/// by the v0 sync loop and is never held across an `.await`.
+#[derive(Clone)]
+pub struct AppState(Arc<Inner>);
+
+pub struct Inner {
+    pub todo: Arc<Mutex<dyn TodoStore + Send>>,
+    pub fit: Arc<Mutex<dyn FitnessStore + Send>>,
+    /// Called after each successful write: persist the doc and trigger sync.
+    pub saved: SavedHook,
+    pub web: WebConfig,
+    pub tz: chrono_tz::Tz,
+    /// Every user ID that may be picked (config `user_id` + all `[web.users]` values).
+    pub known_users: Vec<String>,
+    /// `--dev-user`: skip identity, everyone is this user.
+    pub dev_user: Option<String>,
+    pub now: fn() -> DateTime<Utc>,
+}
+
+impl AppState {
+    pub fn new(
+        todo: Arc<Mutex<dyn TodoStore + Send>>,
+        fit: Arc<Mutex<dyn FitnessStore + Send>>,
+        saved: SavedHook,
+        web: WebConfig,
+        default_user: &str,
+        dev_user: Option<String>,
+    ) -> Result<Self, String> {
+        let tz: chrono_tz::Tz = web.timezone.parse().map_err(|_| format!("unknown timezone {:?}", web.timezone))?;
+        if !web.listen.ip().is_loopback() {
+            return Err(format!("[web] listen = {}: must be a loopback address (127.0.0.1)", web.listen));
+        }
+        let mut users: BTreeSet<String> = web.users.values().flat_map(|u| u.ids()).collect();
+        users.insert(default_user.to_string());
+        users.extend(dev_user.clone());
+        Ok(AppState(Arc::new(Inner { todo, fit, saved, web, tz, known_users: users.into_iter().collect(), dev_user, now: Utc::now })))
+    }
+
+    /// Replace the clock (tests).
+    pub fn with_clock(self, now: fn() -> DateTime<Utc>) -> Self {
+        let inner = Arc::try_unwrap(self.0).unwrap_or_else(|_| panic!("with_clock before cloning the state"));
+        AppState(Arc::new(Inner { now, ..inner }))
+    }
+
+    fn today(&self) -> chrono::NaiveDate {
+        (self.0.now)().with_timezone(&self.0.tz).date_naive()
+    }
+}
+
+// ---- errors ----
+
+#[derive(Debug)]
+pub struct ApiError {
+    status: StatusCode,
+    code: &'static str,
+    message: String,
+}
+
+impl ApiError {
+    pub fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
+        ApiError { status, code, message: message.into() }
+    }
+    fn bad(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::BAD_REQUEST, "invalid", message)
+    }
+    fn forbidden(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::FORBIDDEN, "forbidden", message)
+    }
+    fn internal(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", message)
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let body = serde_json::json!({ "error": { "code": self.code, "message": self.message } });
+        (self.status, axum::Json(body)).into_response()
+    }
+}
+
+impl From<todo_core::Error> for ApiError {
+    fn from(e: todo_core::Error) -> Self {
+        use todo_core::Error::*;
+        match &e {
+            NotFound(_) => Self::new(StatusCode::NOT_FOUND, "not_found", e.to_string()),
+            Invalid(_) => Self::bad(e.to_string()),
+            Conflict(_) => Self::new(StatusCode::CONFLICT, "conflict", e.to_string()),
+            Automerge(_) => Self::internal(e.to_string()),
+        }
+    }
+}
+
+impl From<fitness_core::Error> for ApiError {
+    fn from(e: fitness_core::Error) -> Self {
+        use fitness_core::Error::*;
+        match &e {
+            NotFound(_) => Self::new(StatusCode::NOT_FOUND, "not_found", e.to_string()),
+            NotOwner => Self::forbidden(e.to_string()),
+            Invalid(_) => Self::bad(e.to_string()),
+            Conflict(_) => Self::new(StatusCode::CONFLICT, "conflict", e.to_string()),
+            Automerge(_) => Self::internal(e.to_string()),
+        }
+    }
+}
+
+pub type ApiResult<T> = Result<T, ApiError>;
+
+/// `axum::Json` with rejections in our error format (400 bad JSON, 413, 415).
+pub struct Body<T>(pub T);
+
+impl<T: serde::de::DeserializeOwned, S: Send + Sync> FromRequest<S> for Body<T> {
+    type Rejection = ApiError;
+    async fn from_request(req: Request, state: &S) -> Result<Self, ApiError> {
+        match axum::Json::<T>::from_request(req, state).await {
+            Ok(axum::Json(v)) => Ok(Body(v)),
+            Err(r) => {
+                let code = match r.status() {
+                    StatusCode::PAYLOAD_TOO_LARGE => "too_large",
+                    StatusCode::UNSUPPORTED_MEDIA_TYPE => "unsupported_media_type",
+                    _ => "bad_json",
+                };
+                Err(ApiError::new(r.status(), code, r.body_text()))
+            }
+        }
+    }
+}
+
+// ---- request protection (CSRF via network identity) ----
+
+/// Writes must be `Content-Type: application/json` (a foreign page can't send
+/// that without a CORS preflight, which we never answer) and, if an `Origin`
+/// header is present, it must be ours. We send no CORS headers at all.
+async fn protect(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    if !matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
+        let json = req
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.split(';').next().is_some_and(|m| m.trim().eq_ignore_ascii_case("application/json")));
+        if !json {
+            return ApiError::new(StatusCode::UNSUPPORTED_MEDIA_TYPE, "unsupported_media_type", "writes require Content-Type: application/json")
+                .into_response();
+        }
+        if let Some(origin) = req.headers().get(header::ORIGIN) {
+            let ok = origin.to_str().is_ok_and(|o| state.0.web.allowed_origins().iter().any(|a| a == o));
+            if !ok {
+                return ApiError::new(StatusCode::FORBIDDEN, "bad_origin", "cross-origin write rejected").into_response();
+            }
+        }
+    }
+    next.run(req).await
+}
+
+pub fn router(state: AppState) -> Router {
+    let api = api::routes()
+        .layer(middleware::from_fn_with_state(state.clone(), protect))
+        .layer(DefaultBodyLimit::max(BODY_LIMIT));
+    Router::new()
+        .nest("/api/v1", api)
+        .fallback(assets::serve)
+        .with_state(state)
+}
