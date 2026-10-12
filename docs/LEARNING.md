@@ -235,3 +235,17 @@ Plus `SameSite=Strict` on the picker cookie, so the browser doesn't send it on r
 **The remaining "conflict":** last write wins between two browsers editing the same field seconds apart (e.g. both rename a template); the second `PATCH` overwrites the first. With two people in one house that's acceptable. The fix would be version checks (`If-Match` + ETags).
 
 **Source:** https://www.rfc-editor.org/rfc/rfc9110#name-if-match (the fix, not used)
+
+## v1.5 Secure contexts: why wake lock (and later service workers) need HTTPS
+
+**What:** browsers expose some APIs only to pages in a *secure context*: loaded over HTTPS, or from `localhost` / `127.0.0.1` (treated as trustworthy because traffic never leaves the machine). `window.isSecureContext` tells you which you're in. Screen Wake Lock, service workers, `crypto.randomUUID`, geolocation and the clipboard API are all gated this way.
+
+**Why:** these APIs are powerful or persistent. Over plain HTTP anyone on the network path (café Wi-Fi, a compromised router) could inject a script that keeps your screen on, installs a service worker that intercepts every future visit, or reads your location. HTTPS makes the page's origin trustworthy, so the browser can safely grant it more.
+
+**What it means here:**
+- Over `http://<host-tailnet-ip>:7430` (no TLS) the Log screen can't keep the phone awake, and `crypto.randomUUID` is missing. `web/src/main.ts` feature-detects `navigator.wakeLock` and does nothing if it's absent; `web/src/api.ts` `newId()` falls back to `crypto.getRandomValues` (available in any context).
+- Behind `tailscale serve` the app is `https://<host>.<tailnet>.ts.net`, a secure context, so the wake lock works on phones.
+- On the dev machine, `http://localhost:5173` is already a secure context, which is why the wake lock reported active in testing.
+- A future offline mode (service worker, PWA install; out of scope for v1) has the same requirement.
+
+**Sources:** https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts , https://developer.mozilla.org/en-US/docs/Web/API/Screen_Wake_Lock_API , https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts/features_restricted_to_secure_contexts
