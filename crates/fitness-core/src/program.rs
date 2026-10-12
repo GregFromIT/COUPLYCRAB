@@ -99,7 +99,7 @@ impl ProgramWorkout {
     }
 }
 
-pub(crate) fn validate_gym(g: &GymProfile) -> Result<()> {
+pub fn validate_gym(g: &GymProfile) -> Result<()> {
     let ok = |x: f64| x.is_finite() && x > 0.0;
     if !ok(g.bar_kg) || !ok(g.dumbbell_step_kg) || !ok(g.machine_step_kg) || g.plates_kg.iter().any(|p| !ok(*p)) {
         return Err(Error::Invalid("gym profile: weights and steps must be positive".into()));
@@ -107,7 +107,7 @@ pub(crate) fn validate_gym(g: &GymProfile) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn validate_program(p: &Program) -> Result<()> {
+pub fn validate_program(p: &Program) -> Result<()> {
     let start = parse_date(&p.start_date)?;
     if start.weekday() != Weekday::Mon {
         return Err(Error::Invalid(format!("start_date {}: programs start on a Monday", p.start_date)));

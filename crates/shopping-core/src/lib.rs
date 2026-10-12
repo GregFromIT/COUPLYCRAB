@@ -106,6 +106,8 @@ pub enum Error {
     /// A `put_*` with an existing ID but different content.
     Conflict(String),
     Automerge(String),
+    /// The database failed (SQLite store).
+    Storage(String),
 }
 
 impl fmt::Display for Error {
@@ -115,6 +117,7 @@ impl fmt::Display for Error {
             Error::Invalid(s) => write!(f, "invalid {s}"),
             Error::Conflict(id) => write!(f, "{id} already exists with different content"),
             Error::Automerge(e) => write!(f, "automerge: {e}"),
+            Error::Storage(e) => write!(f, "storage: {e}"),
         }
     }
 }
@@ -264,6 +267,24 @@ impl AmShoppingStore {
             self.write("items", id, &it)?;
         }
         Ok(())
+    }
+}
+
+/// Everything in a shopping document, soft-deleted rows included (for `peer migrate-to-sqlite`).
+#[derive(Debug, Clone, Default)]
+pub struct ShoppingExport {
+    pub lists: Vec<List>,
+    pub items: Vec<Item>,
+}
+
+impl AmShoppingStore {
+    pub fn export(&self) -> Result<ShoppingExport> {
+        let lists: HashMap<String, List> = hydrate_prop(&self.doc, ROOT, "lists")?;
+        let mut lists: Vec<List> = lists.into_values().collect();
+        lists.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut items: Vec<Item> = self.all_items()?.into_values().collect();
+        items.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(ShoppingExport { lists, items })
     }
 }
 

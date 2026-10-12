@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/sync", "crates/todo-core", "crates/shopping-core", "crates/assistant-core", "crates/fitness-core", "crates/peer", "app/src-tauri", "crates/web"]
+members = ["crates/sync", "crates/todo-core", "crates/shopping-core", "crates/assistant-core", "crates/fitness-core", "crates/peer", "app/src-tauri", "crates/web", "crates/sqlite-store", "crates/store-conformance"]
 
 [workspace.dependencies]
 automerge = "=0.12.0"

@@ -83,7 +83,7 @@ pub use progression::{
     default_gym, epley, load_for, prescription, program_week, recommend, round_down_load, warmups, ItemPlan, Prescription, Recommendation, WarmupSet,
     WorkoutPlan, ASSUMED_RIR,
 };
-pub use program::{Equipment, GymProfile, Program, ProgramItem, ProgramWorkout, SetKind, SetStyle, WeekOverride, MUSCLES};
+pub use program::{validate_gym, validate_program, Equipment, GymProfile, Program, ProgramItem, ProgramWorkout, SetKind, SetStyle, WeekOverride, MUSCLES};
 
 /// Shuttles per level, levels 1..=21, of the common 20 m beep test (level 1 at
 /// 8.0 km/h). Source: https://www.topendsports.com/testing/beep-table.htm
@@ -247,7 +247,7 @@ pub struct SetLog {
 
 impl SetLog {
     /// Same logged values, ignoring the server-assigned `index`.
-    fn same(&self, o: &SetLog) -> bool {
+    pub fn same(&self, o: &SetLog) -> bool {
         (&self.exercise_id, self.reps, self.load, self.duration_s, self.distance_m, &self.kind, self.rir, self.partials, self.rest_taken_s, &self.recommendation_id)
             == (&o.exercise_id, o.reps, o.load, o.duration_s, o.distance_m, &o.kind, o.rir, o.partials, o.rest_taken_s, &o.recommendation_id)
     }
@@ -388,6 +388,8 @@ pub enum Error {
     /// A `put_*` with an existing ID but different content.
     Conflict(String),
     Automerge(String),
+    /// The database failed (SQLite store).
+    Storage(String),
 }
 
 impl fmt::Display for Error {
@@ -398,6 +400,7 @@ impl fmt::Display for Error {
             Error::Invalid(s) => write!(f, "invalid {s}"),
             Error::Conflict(id) => write!(f, "{id} already exists with different content"),
             Error::Automerge(e) => write!(f, "automerge: {e}"),
+            Error::Storage(e) => write!(f, "storage: {e}"),
         }
     }
 }
@@ -463,7 +466,27 @@ pub trait FitnessStore {
 
     /// Concrete targets for one user's day: progression and deload applied.
     /// Outside any block: no slots and no block context.
-    fn planned_for(&self, user_id: &str, date: NaiveDate) -> Result<PlannedDay>;
+    fn planned_for(&self, user_id: &str, date: NaiveDate) -> Result<PlannedDay> {
+        let blocks: Vec<Block> = self.list_blocks()?.into_iter().filter(|b| b.user_id == user_id).collect();
+        let Some((block, week)) = plan::active_block(&blocks, date) else {
+            return Ok(PlannedDay { date: date.to_string(), block: None, slots: vec![] });
+        };
+        let plan = self.get_plan(user_id)?;
+        let templates: HashMap<String, Template> = self.list_templates()?.into_iter().map(|t| (t.id.clone(), t)).collect();
+        // Names of the exercises the templates use, deleted ones included.
+        let mut exercises: HashMap<String, Exercise> = HashMap::new();
+        for it in templates.values().flat_map(|t| t.items.values()) {
+            if !exercises.contains_key(&it.exercise_id) {
+                if let Ok(e) = self.get_exercise(&it.exercise_id) {
+                    exercises.insert(e.id.clone(), e);
+                }
+            }
+        }
+        Ok(plan::resolve(block, week, date, plan.as_ref(), &templates, &exercises))
+    }
+
+    /// Every user's weekly plan (a user who never saved one has none).
+    fn list_plans(&self) -> Result<Vec<WeeklyPlan>>;
 
     /// All users, newest first.
     fn list_sessions(&self) -> Result<Vec<Session>>;
@@ -497,7 +520,27 @@ pub trait FitnessStore {
 
     /// Turns each v1 block (with its owner's plan and templates) into a Program
     /// with ID `v1-<block id>`. Idempotent; an existing program is never overwritten.
-    fn migrate_v1_blocks(&mut self) -> Result<Migration>;
+    fn migrate_v1_blocks(&mut self) -> Result<Migration> {
+        let plans: HashMap<String, WeeklyPlan> = self.list_plans()?.into_iter().map(|p| (p.user_id.clone(), p)).collect();
+        let templates: HashMap<String, Template> = self.list_templates()?.into_iter().map(|t| (t.id.clone(), t)).collect();
+        let (programs, mut notes) = migrate::v1_to_programs(&self.list_blocks()?, &plans, &templates);
+        let mut created = 0;
+        for p in programs {
+            if self.get_program(&p.id).is_ok() {
+                continue;
+            }
+            let from = p.migrated_from.clone();
+            self.put_program(p).map_err(|e| Error::Invalid(format!("migrating block {from:?}: {e}")))?;
+            created += 1;
+        }
+        // Notes describe what this call dropped; a re-run that created nothing dropped nothing.
+        if created == 0 {
+            notes.clear();
+        }
+        notes.sort();
+        notes.dedup();
+        Ok(Migration { created, notes })
+    }
 
     /// The user's program whose mesocycle contains `date`, and the week number (the latest start wins).
     fn active_program(&self, user_id: &str, date: NaiveDate) -> Result<Option<(Program, u32)>> {
@@ -729,13 +772,48 @@ impl AmFitnessStore {
     }
 }
 
+/// Everything in a fitness document, soft-deleted rows included (for `peer migrate-to-sqlite`).
+#[derive(Debug, Clone, Default)]
+pub struct FitnessExport {
+    pub exercises: Vec<Exercise>,
+    pub templates: Vec<Template>,
+    pub plans: Vec<WeeklyPlan>,
+    pub blocks: Vec<Block>,
+    pub sessions: Vec<Session>,
+    pub tests: Vec<TestResult>,
+    pub external_activities: Vec<ExternalActivity>,
+    pub gym_profiles: Vec<GymProfile>,
+    pub programs: Vec<Program>,
+}
+
+impl AmFitnessStore {
+    pub fn export(&self) -> Result<FitnessExport> {
+        fn sorted<T>(m: HashMap<String, T>) -> Vec<T> {
+            let mut v: Vec<(String, T)> = m.into_iter().collect();
+            v.sort_by(|a, b| a.0.cmp(&b.0));
+            v.into_iter().map(|(_, t)| t).collect()
+        }
+        Ok(FitnessExport {
+            exercises: sorted(self.all_of("exercises")?),
+            templates: sorted(self.all_of("templates")?),
+            plans: self.list_plans()?,
+            blocks: sorted(self.all_of("blocks")?),
+            sessions: sorted(self.all_of("sessions")?),
+            tests: sorted(self.all_of("tests")?),
+            external_activities: sorted(self.all_of("external_activities")?),
+            gym_profiles: sorted(self.all_of("gym_profiles")?),
+            programs: sorted(self.all_of("programs")?),
+        })
+    }
+}
+
 impl Default for AmFitnessStore {
     fn default() -> Self {
         Self::new()
     }
 }
 
-fn validate_exercise(e: &Exercise) -> Result<()> {
+pub fn validate_exercise(e: &Exercise) -> Result<()> {
     for m in e.primary_muscles.iter().chain(&e.secondary_muscles) {
         if !MUSCLES.contains(&m.as_str()) {
             return Err(Error::Invalid(format!("muscle {m:?}, expected one of {}", MUSCLES.join(", "))));
@@ -744,7 +822,7 @@ fn validate_exercise(e: &Exercise) -> Result<()> {
     Ok(())
 }
 
-fn validate_template(t: &Template) -> Result<()> {
+pub fn validate_template(t: &Template) -> Result<()> {
     for it in t.items.values() {
         if let Some(p) = &it.progression {
             if !p.per_week.is_finite() || p.per_week < 0.0 {
@@ -755,14 +833,14 @@ fn validate_template(t: &Template) -> Result<()> {
     Ok(())
 }
 
-fn same_template(a: &Template, b: &Template) -> bool {
+pub fn same_template(a: &Template, b: &Template) -> bool {
     let items = |t: &Template| {
         t.ordered_items().into_iter().map(|i| TemplateItem { index: 0, ..i.clone() }).collect::<Vec<_>>()
     };
     (&a.name, a.target_minutes, a.deleted) == (&b.name, b.target_minutes, b.deleted) && items(a) == items(b)
 }
 
-fn validate_block(b: &Block) -> Result<()> {
+pub fn validate_block(b: &Block) -> Result<()> {
     let start = parse_date(&b.start_date)?;
     if start.weekday() != Weekday::Mon {
         return Err(Error::Invalid(format!("start_date {}: blocks start on a Monday", b.start_date)));
@@ -782,7 +860,7 @@ fn validate_block(b: &Block) -> Result<()> {
     Ok(())
 }
 
-fn validate_test(r: &mut TestResult) -> Result<()> {
+pub fn validate_test(r: &mut TestResult) -> Result<()> {
     parse_date(&r.date)?;
     match (&r.kind, r.beep, r.value) {
         (TestKind::BeepTest, Some(b), _) => {
@@ -884,14 +962,10 @@ impl FitnessStore for AmFitnessStore {
         self.update("blocks", &b.id.clone(), &b)
     }
 
-    fn planned_for(&self, user_id: &str, date: NaiveDate) -> Result<PlannedDay> {
-        let blocks: Vec<Block> = self.list_blocks()?.into_iter().filter(|b| b.user_id == user_id).collect();
-        let Some((block, week)) = plan::active_block(&blocks, date) else {
-            return Ok(PlannedDay { date: date.to_string(), block: None, slots: vec![] });
-        };
-        let plan = self.get_plan(user_id)?;
-        let doc = self.all()?;
-        Ok(plan::resolve(block, week, date, plan.as_ref(), &doc.templates, &doc.exercises))
+    fn list_plans(&self) -> Result<Vec<WeeklyPlan>> {
+        let mut v: Vec<WeeklyPlan> = self.all_of::<WeeklyPlan>("plans")?.into_values().collect();
+        v.sort_by(|a, b| a.user_id.cmp(&b.user_id));
+        Ok(v)
     }
 
     fn list_sessions(&self) -> Result<Vec<Session>> {
@@ -1012,30 +1086,6 @@ impl FitnessStore for AmFitnessStore {
     fn update_program(&mut self, p: Program) -> Result<()> {
         self.check_program(&p)?;
         self.update("programs", &p.id.clone(), &p)
-    }
-
-    fn migrate_v1_blocks(&mut self) -> Result<Migration> {
-        let (programs, mut notes) = migrate::v1_to_programs(
-            &self.list_blocks()?,
-            &self.all_of::<WeeklyPlan>("plans")?,
-            &self.all_of::<Template>("templates")?,
-        );
-        let mut created = 0;
-        for p in programs {
-            if self.find::<Program>("programs", &p.id)?.is_some() {
-                continue;
-            }
-            let from = p.migrated_from.clone();
-            self.put_program(p).map_err(|e| Error::Invalid(format!("migrating block {from:?}: {e}")))?;
-            created += 1;
-        }
-        // Notes describe what this call dropped; a re-run that created nothing dropped nothing.
-        if created == 0 {
-            notes.clear();
-        }
-        notes.sort();
-        notes.dedup();
-        Ok(Migration { created, notes })
     }
 
     fn upsert_external(&mut self, a: ExternalActivity) -> Result<Write> {

@@ -1,0 +1,17 @@
+[package]
+name = "sqlite-store"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+todo-core = { path = "../todo-core" }
+fitness-core = { path = "../fitness-core" }
+shopping-core = { path = "../shopping-core" }
+# SQLite is compiled in (`bundled`), so the binary needs no system libsqlite on Windows or the Pi.
+rusqlite = { version = "=0.40.2", features = ["bundled"] }
+rusqlite_migration = "=2.6.0"
+serde_json.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+store-conformance = { path = "../store-conformance" }

@@ -230,7 +230,7 @@ impl From<todo_core::Error> for ApiError {
             NotFound(_) => Self::new(StatusCode::NOT_FOUND, "not_found", e.to_string()),
             Invalid(_) => Self::bad(e.to_string()),
             Conflict(_) => Self::new(StatusCode::CONFLICT, "conflict", e.to_string()),
-            Automerge(_) => Self::internal(e.to_string()),
+            Automerge(_) | Storage(_) => Self::internal(e.to_string()),
         }
     }
 }
@@ -242,7 +242,7 @@ impl From<shopping_core::Error> for ApiError {
             NotFound(_) => Self::new(StatusCode::NOT_FOUND, "not_found", e.to_string()),
             Invalid(_) => Self::bad(e.to_string()),
             Conflict(_) => Self::new(StatusCode::CONFLICT, "conflict", e.to_string()),
-            Automerge(_) => Self::internal(e.to_string()),
+            Automerge(_) | Storage(_) => Self::internal(e.to_string()),
         }
     }
 }
@@ -255,7 +255,7 @@ impl From<fitness_core::Error> for ApiError {
             NotOwner => Self::forbidden(e.to_string()),
             Invalid(_) => Self::bad(e.to_string()),
             Conflict(_) => Self::new(StatusCode::CONFLICT, "conflict", e.to_string()),
-            Automerge(_) => Self::internal(e.to_string()),
+            Automerge(_) | Storage(_) => Self::internal(e.to_string()),
         }
     }
 }

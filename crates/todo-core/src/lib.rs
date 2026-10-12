@@ -37,6 +37,8 @@ pub enum Error {
     /// `put` with an existing ID but different title/notes/due.
     Conflict(String),
     Automerge(String),
+    /// The database failed (SQLite store).
+    Storage(String),
 }
 
 /// `YYYY-MM-DD` with a plausible month/day (not a full calendar check).
@@ -84,6 +86,7 @@ impl std::fmt::Display for Error {
             Error::Invalid(s) => write!(f, "invalid {s}"),
             Error::Conflict(id) => write!(f, "todo {id} already exists with different content"),
             Error::Automerge(e) => write!(f, "automerge: {e}"),
+            Error::Storage(e) => write!(f, "storage: {e}"),
         }
     }
 }
@@ -177,6 +180,16 @@ impl AmTodoStore {
         let mut t = self.find(id)?;
         f(&mut t);
         self.write(&t)
+    }
+}
+
+impl AmTodoStore {
+    /// Every todo in the document, soft-deleted ones included, by ID (for `peer migrate-to-sqlite`).
+    pub fn export(&self) -> Result<Vec<Todo>> {
+        let d: TodoDoc = hydrate(&self.doc)?;
+        let mut v: Vec<Todo> = d.todos.into_values().collect();
+        v.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(v)
     }
 }
 
