@@ -36,3 +36,17 @@ Each section: what it is, why this project needs it, where it lives, source.
 **Where:** `crates/todo-core/src/lib.rs`, `crates/fitness-core/src/lib.rs`.
 
 **Sources:** https://automerge.org/docs/hello/, https://docs.rs/automerge/0.12.0/automerge/, https://docs.rs/autosurgeon/0.14.0/autosurgeon/, Shapiro et al. "Conflict-free Replicated Data Types" (2011) https://inria.hal.science/inria-00609399
+
+## 4. Fitness data is append-mostly: it wouldn't strictly need a CRDT
+
+**What:** a logged set is written once by one person and almost never edited. A session is created, gets sets appended, then is finished. Two devices essentially never edit the *same* fitness record concurrently.
+
+**The non-CRDT alternative:** each device keeps its own append-only log file (`<device_id>.log`, one JSON record per line, each with a UUID). Sync = "send me the lines of your log I don't have" (track a per-device line count / last ID). Merged view = union of all logs, deduplicated by ID, latest record per ID wins. Edits are new records with the same ID and a higher timestamp. That's simpler to inspect (`cat` the file), has no history bloat beyond the log itself, and needs no library.
+
+**Why we still use Automerge:** one sync protocol, one persistence path, one mental model for both modules (PLAN §3.2). The cost is that docs keep full history and grow; at two users that's small. The `FitnessStore` trait in `crates/fitness-core/src/lib.rs` is the seam if this changes: an append-log implementation could replace `AmFitnessStore` without touching the app.
+
+**Where it shows:** sets are a map keyed by set ID with an explicit `index` (`SetLog.index`), not an Automerge list, so two devices appending sets never fight over list positions. `log_set` assigns `index = max + 1`; if the same user logged on two devices at once, both sets survive (different keys) and may share an index — order between them is then by key, still deterministic.
+
+**Beep test scores** are `BeepScore { level: u8, shuttle: u8 }` with derived `Ord` (field order = comparison order). As floats, "8.10" parses to 8.1 which is less than 8.5 — wrong, since shuttle 10 comes after shuttle 5. Test `beep_ordering`.
+
+**Source:** https://docs.rs/automerge/0.12.0/automerge/ ; Rust derived `Ord` is lexicographic by field order: https://doc.rust-lang.org/std/cmp/trait.Ord.html#derivable
