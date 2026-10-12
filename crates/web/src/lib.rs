@@ -4,6 +4,7 @@
 //! trigger, provided by the caller) → respond. See docs/API.md.
 
 mod api;
+mod training;
 mod assets;
 mod identity;
 
@@ -134,6 +135,11 @@ impl AppState {
         AppState(Arc::new(Inner { now, ..inner }))
     }
 
+    fn programs_exist(&self) -> Result<bool, ApiError> {
+        let fit = self.0.fit.lock().map_err(|_| ApiError::internal("store mutex poisoned"))?;
+        Ok(!fit.list_programs()?.is_empty())
+    }
+
     fn today(&self) -> chrono::NaiveDate {
         (self.0.now)().with_timezone(&self.0.tz).date_naive()
     }
@@ -146,11 +152,16 @@ pub struct ApiError {
     status: StatusCode,
     code: &'static str,
     message: String,
+    /// For 410 Gone: the path that replaces the endpoint.
+    replacement: Option<&'static str>,
 }
 
 impl ApiError {
     pub fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
-        ApiError { status, code, message: message.into() }
+        ApiError { status, code, message: message.into(), replacement: None }
+    }
+    fn gone(message: impl Into<String>, replacement: &'static str) -> Self {
+        ApiError { replacement: Some(replacement), ..Self::new(StatusCode::GONE, "gone", message) }
     }
     fn bad(message: impl Into<String>) -> Self {
         Self::new(StatusCode::BAD_REQUEST, "invalid", message)
@@ -165,7 +176,10 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let body = serde_json::json!({ "error": { "code": self.code, "message": self.message } });
+        let mut body = serde_json::json!({ "error": { "code": self.code, "message": self.message } });
+        if let Some(r) = self.replacement {
+            body["replacement"] = r.into();
+        }
         (self.status, axum::Json(body)).into_response()
     }
 }
@@ -243,8 +257,27 @@ async fn protect(State(state): State<AppState>, req: Request, next: Next) -> Res
     next.run(req).await
 }
 
+/// v1 templates, plans and blocks were replaced by programs: once any program exists their
+/// endpoints answer 410 Gone and point to `/programs`. A middleware, so it answers before a
+/// request body is parsed (an old client with a stale body still gets the 410).
+async fn gone_v1(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    const GONE: [&str; 5] = ["/templates", "/plan", "/blocks", "/planned-day", "/program-status"];
+    let path = req.uri().path().trim_start_matches("/api/v1");
+    if GONE.iter().any(|p| path == *p || path.strip_prefix(p).is_some_and(|rest| rest.starts_with('/'))) {
+        match state.programs_exist() {
+            Ok(true) => {
+                return ApiError::gone("templates, weekly plans and blocks were replaced by programs", "/api/v1/programs").into_response();
+            }
+            Ok(false) => {}
+            Err(e) => return e.into_response(),
+        }
+    }
+    next.run(req).await
+}
+
 pub fn router(state: AppState) -> Router {
     let api = api::routes()
+        .layer(middleware::from_fn_with_state(state.clone(), gone_v1))
         .layer(middleware::from_fn_with_state(state.clone(), protect))
         .layer(DefaultBodyLimit::max(BODY_LIMIT));
     Router::new()

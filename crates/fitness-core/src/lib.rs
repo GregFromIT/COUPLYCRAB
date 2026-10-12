@@ -75,8 +75,10 @@ mod analytics;
 mod migrate;
 mod progression;
 mod program;
+mod schedule;
 pub use analytics::{e1rm_series, prs, week_start, weekly_volume, E1rmPoint, Pr};
 pub use migrate::Migration;
+pub use schedule::{ExternalToday, NextWorkout, TodaySession};
 pub use progression::{
     default_gym, epley, load_for, prescription, program_week, recommend, round_down_load, warmups, ItemPlan, Prescription, Recommendation, WarmupSet,
     WorkoutPlan, ASSUMED_RIR,
@@ -525,6 +527,14 @@ pub trait FitnessStore {
         let workout = program.workouts.get(workout_id).ok_or_else(|| Error::NotFound(workout_id.into()))?;
         let exercises: HashMap<String, Exercise> = self.list_exercises()?.into_iter().map(|e| (e.id.clone(), e)).collect();
         Ok(progression::plan_workout(&program, workout, date, &exercises, &self.list_sessions()?, &self.gym_for(&program)?))
+    }
+
+    /// The workout to do on `date`: pinned for that weekday, else next in the program's
+    /// rotation, with its plan. `local_date` maps `started_at` (ms) to the user's local date.
+    fn next_workout(&self, user_id: &str, date: NaiveDate, local_date: &dyn Fn(i64) -> NaiveDate) -> Result<NextWorkout> {
+        schedule::next_workout(self.active_program(user_id, date)?, date, user_id, &self.list_sessions()?, local_date, &|p, w| {
+            self.plan_workout(user_id, &p.id, &w.id, date)
+        })
     }
 
     // ---- v0 conveniences: the store generates the ID ----

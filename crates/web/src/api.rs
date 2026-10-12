@@ -13,14 +13,14 @@ use axum::{
 };
 use chrono::{NaiveDate, TimeZone};
 use fitness_core::{
-    BeepScore, Block, BlockContext, Exercise, ExternalActivity, FitnessStore, MeasurementType, NewTemplateItem, PlanSlot, Session,
-    SessionStatus, SetLog, Template, TestKind, TestResult, WeeklyPlan, Write,
+    BeepScore, Block, BlockContext, Equipment, Exercise, ExternalActivity, FitnessStore, MeasurementType, NewTemplateItem, PlanSlot, Session,
+    SessionStatus, SetKind, SetLog, Template, TestKind, TestResult, WeeklyPlan, Write,
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 use todo_core::{Todo, TodoStore};
 
-type Q = Query<HashMap<String, String>>;
+pub(crate) type Q = Query<HashMap<String, String>>;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -30,6 +30,7 @@ pub fn routes() -> Router<AppState> {
         .route("/todos/{id}", put(put_todo).patch(patch_todo).delete(delete_todo))
         .route("/todos/{id}/complete", post(complete_todo))
         .route("/todos/{id}/uncomplete", post(uncomplete_todo))
+        .merge(crate::training::routes())
         .route("/exercises", get(list_exercises))
         .route("/exercises/{id}", put(put_exercise).patch(patch_exercise))
         .route("/templates", get(list_templates))
@@ -51,23 +52,23 @@ pub fn routes() -> Router<AppState> {
 
 // ---- helpers ----
 
-fn lock<T: ?Sized>(m: &std::sync::Mutex<T>) -> ApiResult<std::sync::MutexGuard<'_, T>> {
+pub(crate) fn lock<T: ?Sized>(m: &std::sync::Mutex<T>) -> ApiResult<std::sync::MutexGuard<'_, T>> {
     m.lock().map_err(|_| ApiError::internal("store mutex poisoned"))
 }
 
 impl AppState {
-    fn read_todo<T>(&self, f: impl FnOnce(&dyn TodoStore) -> todo_core::Result<T>) -> ApiResult<T> {
+    pub(crate) fn read_todo<T>(&self, f: impl FnOnce(&dyn TodoStore) -> todo_core::Result<T>) -> ApiResult<T> {
         Ok(f(&*lock(&self.0.todo)?)?)
     }
-    fn write_todo<T>(&self, f: impl FnOnce(&mut dyn TodoStore) -> todo_core::Result<T>) -> ApiResult<T> {
+    pub(crate) fn write_todo<T>(&self, f: impl FnOnce(&mut dyn TodoStore) -> todo_core::Result<T>) -> ApiResult<T> {
         let out = f(&mut *lock(&self.0.todo)?)?;
         (self.0.saved)(DocKind::Todo).map_err(ApiError::internal)?;
         Ok(out)
     }
-    fn read_fit<T>(&self, f: impl FnOnce(&dyn FitnessStore) -> fitness_core::Result<T>) -> ApiResult<T> {
+    pub(crate) fn read_fit<T>(&self, f: impl FnOnce(&dyn FitnessStore) -> fitness_core::Result<T>) -> ApiResult<T> {
         Ok(f(&*lock(&self.0.fit)?)?)
     }
-    fn write_fit<T>(&self, f: impl FnOnce(&mut dyn FitnessStore) -> fitness_core::Result<T>) -> ApiResult<T> {
+    pub(crate) fn write_fit<T>(&self, f: impl FnOnce(&mut dyn FitnessStore) -> fitness_core::Result<T>) -> ApiResult<T> {
         let out = f(&mut *lock(&self.0.fit)?)?;
         (self.0.saved)(DocKind::Fitness).map_err(ApiError::internal)?;
         Ok(out)
@@ -75,16 +76,16 @@ impl AppState {
 }
 
 /// 201 for a new resource, 200 otherwise.
-fn created<T: Serialize>(new: bool, body: T) -> Response {
+pub(crate) fn created<T: Serialize>(new: bool, body: T) -> Response {
     (if new { StatusCode::CREATED } else { StatusCode::OK }, Json(body)).into_response()
 }
 
-fn check_id(id: &str) -> ApiResult<()> {
+pub(crate) fn check_id(id: &str) -> ApiResult<()> {
     let ok = (1..=64).contains(&id.len()) && id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_');
     if ok { Ok(()) } else { Err(ApiError::bad(format!("id {id:?}: 1-64 chars of A-Z a-z 0-9 - _"))) }
 }
 
-fn check_text(field: &str, s: &str, max: usize, required: bool) -> ApiResult<()> {
+pub(crate) fn check_text(field: &str, s: &str, max: usize, required: bool) -> ApiResult<()> {
     if required && s.trim().is_empty() {
         return Err(ApiError::bad(format!("{field} is required")));
     }
@@ -94,31 +95,31 @@ fn check_text(field: &str, s: &str, max: usize, required: bool) -> ApiResult<()>
     Ok(())
 }
 
-fn check_opt(field: &str, s: &Option<String>, max: usize) -> ApiResult<()> {
+pub(crate) fn check_opt(field: &str, s: &Option<String>, max: usize) -> ApiResult<()> {
     s.as_deref().map_or(Ok(()), |s| check_text(field, s, max, false))
 }
 
-fn check_num(field: &str, v: Option<f64>) -> ApiResult<()> {
+pub(crate) fn check_num(field: &str, v: Option<f64>) -> ApiResult<()> {
     match v {
         Some(x) if !x.is_finite() || x < 0.0 || x > 1e7 => Err(ApiError::bad(format!("{field} must be a number from 0 to 10000000"))),
         _ => Ok(()),
     }
 }
 
-fn parse_date(field: &str, s: &str) -> ApiResult<NaiveDate> {
+pub(crate) fn parse_date(field: &str, s: &str) -> ApiResult<NaiveDate> {
     NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| ApiError::bad(format!("{field} {s:?}: expected YYYY-MM-DD")))
 }
 
-const TITLE: usize = 200;
-const NOTES: usize = 2000;
+pub(crate) const TITLE: usize = 200;
+pub(crate) const NOTES: usize = 2000;
 
 /// `?user=` (read the other user's data) or the current user.
-fn target_user(q: &HashMap<String, String>, me: &str) -> String {
+pub(crate) fn target_user(q: &HashMap<String, String>, me: &str) -> String {
     q.get("user").cloned().unwrap_or_else(|| me.to_string())
 }
 
 /// For PATCH: distinguishes "field absent" (`None`) from "set to null" (`Some(None)`).
-fn some<'de, D: Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<T>, D::Error> {
+pub(crate) fn some<'de, D: Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<T>, D::Error> {
     T::deserialize(d).map(Some)
 }
 
@@ -212,11 +213,23 @@ struct ExerciseIn {
     name: String,
     measurement: MeasurementType,
     tempo: Option<String>,
+    #[serde(default)]
+    primary_muscles: Vec<String>,
+    #[serde(default)]
+    secondary_muscles: Vec<String>,
+    equipment: Option<Equipment>,
+    default_rest_s: Option<u32>,
 }
 
 fn check_exercise(e: &Exercise) -> ApiResult<()> {
     check_text("name", &e.name, TITLE, true)?;
     check_opt("tempo", &e.tempo, 20)?;
+    if let Some(Equipment::Unknown(q)) = &e.equipment {
+        return Err(ApiError::bad(format!("equipment {q:?}: expected Barbell, Dumbbell, Machine, Cable, Bodyweight or Other")));
+    }
+    if e.default_rest_s.is_some_and(|r| r > 3600) {
+        return Err(ApiError::bad("default_rest_s must be 0-3600"));
+    }
     if let MeasurementType::Unknown(m) = &e.measurement {
         return Err(ApiError::bad(format!("measurement {m:?}: expected WeightReps, Reps, Timed or Distance")));
     }
@@ -225,7 +238,14 @@ fn check_exercise(e: &Exercise) -> ApiResult<()> {
 
 async fn put_exercise(State(st): State<AppState>, _me: Me, Path(id): Path<String>, Body(b): Body<ExerciseIn>) -> ApiResult<Response> {
     check_id(&id)?;
-    let e = Exercise { tempo: b.tempo, ..Exercise::new(id, &b.name, b.measurement) };
+    let e = Exercise {
+        tempo: b.tempo,
+        primary_muscles: b.primary_muscles,
+        secondary_muscles: b.secondary_muscles,
+        equipment: b.equipment,
+        default_rest_s: b.default_rest_s,
+        ..Exercise::new(id, &b.name, b.measurement)
+    };
     check_exercise(&e)?;
     let w = st.write_fit(|s| s.put_exercise(e.clone()))?;
     Ok(created(w == Write::Created, e))
@@ -237,6 +257,12 @@ struct ExercisePatch {
     measurement: Option<MeasurementType>,
     #[serde(default, deserialize_with = "some")]
     tempo: Option<Option<String>>,
+    primary_muscles: Option<Vec<String>>,
+    secondary_muscles: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "some")]
+    equipment: Option<Option<Equipment>>,
+    #[serde(default, deserialize_with = "some")]
+    default_rest_s: Option<Option<u32>>,
 }
 
 async fn patch_exercise(State(st): State<AppState>, _me: Me, Path(id): Path<String>, Body(b): Body<ExercisePatch>) -> ApiResult<Json<Exercise>> {
@@ -244,6 +270,10 @@ async fn patch_exercise(State(st): State<AppState>, _me: Me, Path(id): Path<Stri
     e.name = b.name.unwrap_or(e.name);
     e.measurement = b.measurement.unwrap_or(e.measurement);
     e.tempo = b.tempo.unwrap_or(e.tempo);
+    e.primary_muscles = b.primary_muscles.unwrap_or(e.primary_muscles);
+    e.secondary_muscles = b.secondary_muscles.unwrap_or(e.secondary_muscles);
+    e.equipment = b.equipment.unwrap_or(e.equipment);
+    e.default_rest_s = b.default_rest_s.unwrap_or(e.default_rest_s);
     check_exercise(&e)?;
     st.write_fit(|s| s.update_exercise(e.clone()))?;
     Ok(Json(e))
@@ -468,6 +498,8 @@ async fn get_session(State(st): State<AppState>, _me: Me, Path(id): Path<String>
 
 #[derive(Deserialize)]
 struct SessionIn {
+    program_id: Option<String>,
+    workout_id: Option<String>,
     template_id: Option<String>,
     block_id: Option<String>,
     block_week: Option<u32>,
@@ -488,6 +520,7 @@ async fn put_session(State(st): State<AppState>, Me(me): Me, Path(id): Path<Stri
     }
     let mut s = Session::start(id.clone(), &me);
     (s.template_id, s.block_id, s.block_week, s.slot, s.label) = (b.template_id, b.block_id, b.block_week, b.slot, b.label);
+    (s.program_id, s.workout_id) = (b.program_id, b.workout_id);
     let w = st.write_fit(|f| f.put_session(s))?;
     Ok(created(w == Write::Created, st.read_fit(|f| f.get_session(&id))?))
 }
@@ -505,6 +538,13 @@ async fn put_set(
     if set.exercise_id.is_empty() {
         return Err(ApiError::bad("exercise_id is required"));
     }
+    if let Some(SetKind::Unknown(k)) = &set.kind {
+        return Err(ApiError::bad(format!("kind {k:?}: expected Warmup, Working, Drop or Failure")));
+    }
+    if set.rir.is_some_and(|r| r > 10) || set.partials.is_some_and(|p| p > 50) || set.rest_taken_s.is_some_and(|r| r > 7200) {
+        return Err(ApiError::bad("rir must be 0-10, partials 0-50, rest_taken_s 0-7200"));
+    }
+    check_opt("recommendation_id", &set.recommendation_id, 200)?;
     let w = st.write_fit(|s| s.put_set(&me, &id, &set_id, set))?;
     let session = st.read_fit(|s| s.get_session(&id))?;
     Ok(created(w == Write::Created, session))

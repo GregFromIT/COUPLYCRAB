@@ -1,106 +1,14 @@
-//! Router tests with `tower::ServiceExt::oneshot`; no sockets.
-//! Pattern: https://github.com/tokio-rs/axum/tree/main/examples/testing
+//! Router tests; the harness is in `common/mod.rs`.
 
-use axum::{
-    body::Body,
-    http::{header, HeaderMap, Method, Request, StatusCode},
-    Router,
-};
+mod common;
+
+use axum::http::{header, Method, StatusCode};
+use common::*;
 use fitness_core::AmFitnessStore;
-use http_body_util::BodyExt;
 use serde_json::{json, Value};
-use std::{
-    collections::HashMap,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc, Mutex,
-    },
-};
+use std::sync::{atomic::Ordering, Arc, Mutex};
 use todo_core::AmTodoStore;
-use tower::ServiceExt;
-use web::{AppState, OneOrMany, WebConfig};
-
-struct App {
-    router: Router,
-    saves: Arc<AtomicUsize>,
-    todo: Arc<Mutex<AmTodoStore>>,
-    fit: Arc<Mutex<AmFitnessStore>>,
-}
-
-fn app(web: WebConfig, dev_user: Option<&str>) -> App {
-    let todo = Arc::new(Mutex::new(AmTodoStore::new()));
-    let fit = Arc::new(Mutex::new(AmFitnessStore::new()));
-    let saves = Arc::new(AtomicUsize::new(0));
-    let s = saves.clone();
-    let state = AppState::new(
-        todo.clone(),
-        fit.clone(),
-        Arc::new(move |_| {
-            s.fetch_add(1, Ordering::SeqCst);
-            Ok(())
-        }),
-        web,
-        "alice",
-        dev_user.map(Into::into),
-    )
-    .unwrap()
-    // 2026-10-11 14:30 UTC = 2026-10-12 01:30 in Sydney (AEDT, +11).
-    .with_clock(|| "2026-10-11T14:30:00Z".parse().unwrap());
-    App { router: web::router(state), saves, todo, fit }
-}
-
-fn dev() -> App {
-    app(WebConfig { timezone: "Australia/Sydney".into(), ..Default::default() }, Some("alice"))
-}
-
-fn users_config() -> WebConfig {
-    WebConfig {
-        users: HashMap::from([
-            ("alice@example.com".to_string(), OneOrMany::One("alice".into())),
-            ("bob@example.com".to_string(), OneOrMany::One("bob".into())),
-            ("Zoë@example.com".to_string(), OneOrMany::One("zoe".into())),
-            ("shared@example.com".to_string(), OneOrMany::Many(vec!["alice".into(), "bob".into()])),
-        ]),
-        ..Default::default()
-    }
-}
-
-impl App {
-    async fn req(&self, method: Method, uri: &str, body: Option<Value>, headers: &[(&str, &str)]) -> (StatusCode, Value, HeaderMap) {
-        let mut b = Request::builder().method(method.clone()).uri(uri);
-        if method != Method::GET && !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-type")) {
-            b = b.header(header::CONTENT_TYPE, "application/json");
-        }
-        for (k, v) in headers {
-            b = b.header(*k, *v);
-        }
-        let body = body.map_or(Body::empty(), |v| Body::from(v.to_string()));
-        let res = self.router.clone().oneshot(b.body(body).unwrap()).await.unwrap();
-        let (status, headers) = (res.status(), res.headers().clone());
-        let bytes = res.into_body().collect().await.unwrap().to_bytes();
-        let v = if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes).unwrap_or(Value::String(String::from_utf8_lossy(&bytes).into())) };
-        (status, v, headers)
-    }
-    async fn get(&self, uri: &str) -> (StatusCode, Value) {
-        let (s, v, _) = self.req(Method::GET, uri, None, &[]).await;
-        (s, v)
-    }
-    async fn put(&self, uri: &str, body: Value) -> (StatusCode, Value) {
-        let (s, v, _) = self.req(Method::PUT, uri, Some(body), &[]).await;
-        (s, v)
-    }
-    async fn send(&self, m: Method, uri: &str, body: Value) -> (StatusCode, Value) {
-        let (s, v, _) = self.req(m, uri, Some(body), &[]).await;
-        (s, v)
-    }
-    async fn as_user(&self, login: &str, m: Method, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
-        let (s, v, _) = self.req(m, uri, body, &[("Tailscale-User-Login", login)]).await;
-        (s, v)
-    }
-}
-
-const P: Method = Method::PATCH;
-const POST: Method = Method::POST;
+use web::{AppState, WebConfig};
 
 #[tokio::test]
 async fn every_endpoint_happy_path() {
