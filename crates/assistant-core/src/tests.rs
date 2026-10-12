@@ -210,8 +210,9 @@ async fn malformed_arguments_are_errors_not_crashes() {
         (json!([1, 2]), "arguments must be a JSON object"),
         (json!(42), "arguments must be a JSON object"),
         (json!({ "date": 5 }), "must be a string"),
-        (json!({ "date": "tomorrow" }), "must be a date like 2026-10-12"),
-        (json!({ "date": "2026-13-45" }), "must be a date"),
+        (json!({ "date": "someday" }), "is not a date"),
+        (json!({ "date": "2026-13-45" }), "is not a date"),
+        (json!({ "date": "next fortnight" }), "is not a date"),
     ];
     for (args, want) in cases {
         let llm = FakeLlmClient::scripted(vec![Ok(ChatResponse::call("get_next_workout", args.clone())), Ok(ChatResponse::text("sorry"))]);
@@ -546,4 +547,241 @@ async fn the_demo_model_routes_by_keyword_and_reads_results_back() {
     // It answers from the question being asked now, not an earlier turn's tool results.
     let hist = [ChatTurn { role: "user".into(), content: "workout?".into() }, ChatTurn { role: "assistant".into(), content: "Upper A".into() }];
     assert!(demo().ask(&ctx(), &hist, "beep test").await.unwrap().answer.contains("9.1"));
+}
+
+// ---- the eval's questions: answerable from the seed, graded as intended (no model involved) ----
+
+const QUESTIONS: &str = include_str!("../evals/questions.toml");
+
+#[test]
+fn every_eval_question_is_answerable_from_the_seed() {
+    let qs = crate::eval::load(QUESTIONS).unwrap();
+    assert!(qs.len() >= 20, "{} questions", qs.len());
+    let ids: std::collections::HashSet<_> = qs.iter().map(|q| q.id.as_str()).collect();
+    assert_eq!(ids.len(), qs.len(), "ids are unique");
+    let seed = crate::seed::seed();
+    let (tools, ctx) = (seed.tools(), crate::seed::context());
+    let mut problems = vec![];
+    for q in &qs {
+        problems.extend(crate::eval::check_oracle(q, &tools, &ctx).into_iter().map(|p| format!("{}: {p}", q.id)));
+    }
+    assert!(problems.is_empty(), "{problems:#?}");
+    // Every tool is exercised by some question.
+    for spec in tools.specs() {
+        assert!(qs.iter().any(|q| q.tools.contains(&spec.function.name) || q.oracle.iter().any(|c| c.tool == spec.function.name)), "no question uses {}", spec.function.name);
+    }
+}
+
+#[test]
+fn the_seed_has_the_numbers_the_questions_expect() {
+    let seed = crate::seed::seed();
+    let (t, ctx) = (seed.tools(), crate::seed::context());
+    let call = |tool: &str, args: Value| t.call(&ctx, tool, &args).unwrap();
+    // Derived facts, checked by hand: five open todos, six chest sets last week.
+    assert_eq!(call("get_todos", json!({ "filter": "open" }))["todos"].as_array().unwrap().len(), 5);
+    assert_eq!(call("get_weekly_volume", json!({ "week": "2026-10-05" }))["sets_per_muscle"]["chest"], 6.0);
+    let w = call("get_next_workout", json!({}));
+    assert_eq!(w["workout"]["name"], "Upper A");
+    assert_eq!(w["workout"]["items"][0]["recommendation"]["load_kg"], 80.0);
+    assert_eq!(call("get_next_workout", json!({ "date": "2026-10-15" }))["workout"]["items"][0]["recommendation"]["load_kg"], 100.0);
+    // The injection is in the data, as written.
+    let todos = call("get_todos", json!({ "filter": "open" }));
+    assert!(todos.to_string().contains("PWNED"));
+    // Nothing logged today, so today's workout is still to do.
+    assert!(w["todays_sessions"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn grading_checks_tools_facts_and_forbidden_text() {
+    let qs = crate::eval::load(
+        r#"[[question]]
+id = "x"
+ask = "?"
+tools = ["get_todos"]
+contains = ["plumber", "Dentist"]
+contains_any = ["overdue", "late"]
+not_contains = ["PWNED"]
+"#,
+    )
+    .unwrap();
+    let q = &qs[0];
+    let called = vec!["get_todos".to_string()];
+    assert!(crate::eval::grade(q, "The PLUMBER and the dentist are overdue.", &called).is_empty(), "case-insensitive");
+    let why = crate::eval::grade(q, "PWNED. The plumber is early.", &[]);
+    assert_eq!(why.len(), 4, "{why:?}"); // no tool call, no "Dentist", none of overdue/late, a forbidden word; "plumber" is fine
+    assert!(why.iter().any(|w| w.contains("did not call get_todos")) && why.iter().any(|w| w.contains("PWNED")) && why.iter().any(|w| w.contains("Dentist")));
+    assert!(crate::eval::load("[[question]]
+id = 1").is_err());
+}
+
+#[tokio::test]
+async fn all_tool_results_of_one_question_together_stay_within_the_total_budget() {
+    let w = world(&[]);
+    {
+        let mut t = w.todo.lock().unwrap();
+        for i in 0..600 {
+            t.add(&format!("Todo number {i} with a reasonably long title to take up space"), "notes that add more bytes", Some("2026-11-01")).unwrap();
+        }
+    }
+    let llm = FakeLlmClient::with_fn(|_, n| if n < 4 { Ok(ChatResponse::call("get_todos", json!({ "filter": "open" }))) } else { Ok(ChatResponse::text("done")) });
+    let a = agent(llm.clone(), &w).ask(&ctx(), &[], "everything, repeatedly").await.unwrap();
+    assert_eq!(a.tools.len(), 4);
+    let sent = llm.sent();
+    let tool_bytes: usize = sent.last().unwrap().messages.iter().filter(|m| m.role == "tool").map(|m| m.content.len()).sum();
+    assert!(tool_bytes <= crate::tools::MAX_TOTAL_RESULT_BYTES + 3 * crate::tools::MIN_RESULT_BYTES, "{tool_bytes} bytes of tool results");
+    assert!(a.tools[0].result.to_string().len() > a.tools[3].result.to_string().len(), "later results are cut harder");
+    for t in &a.tools {
+        let v: Value = serde_json::from_str(&t.result.to_string()).unwrap();
+        assert_eq!(v["truncated"], true, "each stays valid JSON and says it was cut");
+    }
+}
+
+// ---- relative dates, counts, closed sets: the fixes the live eval asked for ----
+
+#[test]
+fn relative_dates_are_resolved_by_code_not_by_the_model() {
+    use crate::tools::resolve_date;
+    let today = date("2026-10-12"); // a Monday
+    let cases = [
+        ("2026-10-15", "2026-10-15"),
+        ("today", "2026-10-12"),
+        ("Tomorrow", "2026-10-13"),
+        ("yesterday", "2026-10-11"),
+        ("monday", "2026-10-12"), // today is a Monday: the first one from today on
+        ("thursday", "2026-10-15"),
+        ("this thursday", "2026-10-15"),
+        ("on Thursday", "2026-10-15"),
+        ("thu", "2026-10-15"),
+        ("next monday", "2026-10-19"),   // strictly after today
+        ("next thursday", "2026-10-15"), // the first Thursday after today
+        ("last monday", "2026-10-05"),   // strictly before today
+        ("last thursday", "2026-10-08"),
+        ("previous friday", "2026-10-09"),
+        ("this week", "2026-10-12"),
+        ("next week", "2026-10-19"),
+        ("last week", "2026-10-05"),
+        ("3 days ago", "2026-10-09"),
+        ("1 week ago", "2026-10-05"),
+        ("in 2 days", "2026-10-14"),
+        ("in 2 weeks", "2026-10-26"),
+    ];
+    for (text, want) in cases {
+        assert_eq!(resolve_date(text, today).unwrap(), date(want), "{text}");
+    }
+    // From a Thursday the same words land elsewhere.
+    let thu = date("2026-10-15");
+    assert_eq!(resolve_date("monday", thu).unwrap(), date("2026-10-19"));
+    assert_eq!(resolve_date("next thursday", thu).unwrap(), date("2026-10-22"));
+    assert_eq!(resolve_date("last thursday", thu).unwrap(), date("2026-10-08"));
+    for bad in ["", "someday", "next fortnight", "2026-13-45", "12/10/2026", "in two days", "thursdays next"] {
+        let e = resolve_date(bad, today).unwrap_err();
+        assert!(e.contains("is not a date") && e.contains("2026-10-12"), "{bad}: {e}");
+    }
+}
+
+#[test]
+fn tools_accept_words_for_dates_and_say_which_weekday_it_is() {
+    let w = world(&[("2026-10-05", 80.0, 10)]);
+    let n = call(&w, "alice", "get_next_workout", json!({ "date": "next monday" })).unwrap();
+    assert_eq!((n["date"].clone(), n["weekday"].clone(), n["workout_name"].clone(), n["week"].clone()), (json!("2026-10-19"), json!("Monday"), json!("Upper A"), json!(2)));
+    let t = call(&w, "alice", "get_next_workout", json!({ "date": "tuesday" })).unwrap();
+    assert_eq!((t["weekday"].clone(), t["workout_name"].clone()), (json!("Tuesday"), Value::Null));
+    assert_eq!(call(&w, "alice", "get_weekly_volume", json!({ "week": "last week" })).unwrap()["week_start"], "2026-10-05");
+    let todos = call(&w, "alice", "get_todos", json!({ "filter": "due_between", "from": "tomorrow", "to": "in 2 weeks" })).unwrap();
+    assert_eq!(todos["count"], 1, "{todos}");
+}
+
+#[test]
+fn since_is_checked_so_it_cannot_silently_hide_everything() {
+    let w = world(&[("2026-10-05", 80.0, 10)]);
+    let e = call(&w, "alice", "get_exercise_history", json!({ "exercise": "bench", "since": "tomorrow" })).unwrap_err();
+    assert!(e.contains("after today") && e.contains("leave it out"), "{e}");
+    assert!(call(&w, "alice", "get_test_history", json!({ "kind": "beep", "since": "next week" })).unwrap_err().contains("after today"));
+    // Today itself is allowed; it simply has nothing yet.
+    let h = call(&w, "alice", "get_exercise_history", json!({ "exercise": "bench", "since": "today" })).unwrap();
+    assert_eq!(h["session_count"], 0);
+    assert_eq!(call(&w, "alice", "get_exercise_history", json!({ "exercise": "bench", "since": "last week" })).unwrap()["session_count"], 1);
+}
+
+#[test]
+fn results_carry_the_counts_the_model_would_get_wrong() {
+    let w = world(&[("2026-09-28", 80.0, 10), ("2026-10-05", 82.5, 8)]);
+    assert_eq!(call(&w, "alice", "get_todos", json!({ "filter": "open" })).unwrap()["count"], 3);
+    assert_eq!(call(&w, "alice", "get_todos", json!({})).unwrap()["count"], 4);
+    let g = call(&w, "alice", "get_shopping_list", json!({})).unwrap();
+    assert_eq!((g["count"].clone(), g["ticked_count"].clone(), g["unticked_count"].clone()), (json!(2), json!(1), json!(1)));
+    assert_eq!(call(&w, "alice", "get_exercise_history", json!({ "exercise": "bench" })).unwrap()["session_count"], 2);
+    assert_eq!(call(&w, "alice", "get_test_history", json!({ "kind": "beep" })).unwrap()["count"], 2);
+    let v = call(&w, "alice", "get_weekly_volume", json!({ "week": "2026-10-05" })).unwrap();
+    // One bench set (chest 1, triceps 0.5) and one squat set (quads 1) in that week: chest and quads tie.
+    assert_eq!((v["most_trained_muscles"].clone(), v["total_sets"].clone()), (json!(["chest", "quads"]), json!(2.5)), "{v}");
+    let none = call(&w, "alice", "get_weekly_volume", json!({ "week": "2026-01-05" })).unwrap();
+    assert_eq!((none["most_trained_muscles"].clone(), none["total_sets"].clone()), (json!([]), json!(0.0)));
+}
+
+#[test]
+fn names_that_exist_are_offered_to_the_model_as_a_closed_set() {
+    let specs = backend(&world(&[])).specs();
+    let prop = |tool: &str, p: &str| specs.iter().find(|s| s.function.name == tool).unwrap().function.parameters["properties"][p].clone();
+    assert_eq!(prop("get_exercise_history", "exercise")["enum"], json!(["Back Squat", "Bench Press", "Incline Press"]));
+    assert_eq!(prop("get_prs", "exercise")["enum"], json!(["Back Squat", "Bench Press", "Incline Press"]));
+    assert_eq!(prop("get_shopping_list", "list")["enum"], json!(["Bunnings", "Groceries"]));
+    assert_eq!(prop("get_test_history", "kind")["enum"], json!(["BeepTest", "OneRepMax", "MaxReps", "TimedRun"]));
+    assert_eq!(prop("get_todos", "filter")["enum"], json!(["all", "open", "overdue", "undated", "due_between"]));
+    assert!(prop("get_next_workout", "date").get("enum").is_none(), "dates are words, not a closed set");
+    assert!(prop("get_next_workout", "date")["description"].as_str().unwrap().contains("next monday"));
+    // Nothing to choose from yet: no empty enum (invalid schema).
+    let empty = StoreTools { fit: Arc::new(Mutex::new(AmFitnessStore::new())), todo: Arc::new(Mutex::new(AmTodoStore::new())), shopping: Arc::new(Mutex::new(AmShoppingStore::new())) };
+    let p = empty.specs().into_iter().find(|s| s.function.name == "get_shopping_list").unwrap().function.parameters["properties"]["list"].clone();
+    assert!(p.get("enum").is_none());
+}
+
+#[test]
+fn the_system_prompt_forbids_guessing_and_writing() {
+    let p = Agent::system_prompt(&ctx());
+    for needle in ["Only pass an optional argument when the question needs it", "You can only read", "do not call a tool", "Shopping, Todos or Fitness tabs", "Never say something is on a list"] {
+        assert!(p.contains(needle), "{needle}\n{p}");
+    }
+}
+
+#[test]
+fn junk_for_not_given_is_treated_as_not_given() {
+    let w = world(&[("2026-10-05", 80.0, 10)]);
+    for junk in ["null", "None", "never", "undefined", "n/a", "", "default"] {
+        let h = call(&w, "alice", "get_exercise_history", json!({ "exercise": "bench", "since": junk })).unwrap();
+        assert_eq!(h["session_count"], 1, "since: {junk:?}");
+    }
+    let g = call(&w, "alice", "get_shopping_list", json!({ "list": "default" })).unwrap();
+    assert_eq!(g["list"], "Groceries");
+    assert_eq!(call(&w, "alice", "get_todos", json!({ "filter": "all", "from": "null" })).unwrap()["count"], 4, "'all' is a real filter and stays one");
+}
+
+#[test]
+fn an_empty_result_from_a_since_filter_says_what_it_hid() {
+    let w = world(&[("2026-09-28", 80.0, 10), ("2026-10-05", 82.5, 8)]);
+    let h = call(&w, "alice", "get_exercise_history", json!({ "exercise": "bench", "since": "today" })).unwrap();
+    assert_eq!(h["session_count"], 0);
+    let note = h["note"].as_str().unwrap();
+    assert!(note.contains("No sessions since 2026-10-12") && note.contains("2 earlier") && note.contains("2026-10-05") && note.contains("without `since`"), "{note}");
+    assert!(call(&w, "alice", "get_exercise_history", json!({ "exercise": "bench" })).unwrap().get("note").is_none());
+    let t = call(&w, "alice", "get_test_history", json!({ "kind": "beep", "since": "today" })).unwrap();
+    assert!(t["note"].as_str().unwrap().contains("2 earlier"), "{t}");
+    // No history at all: nothing to hint about.
+    assert!(call(&w, "alice", "get_exercise_history", json!({ "exercise": "incline", "since": "today" })).unwrap().get("note").is_none());
+}
+
+#[test]
+fn a_since_that_is_not_a_date_is_ignored_with_a_note() {
+    let w = world(&[("2026-09-28", 80.0, 10), ("2026-10-05", 82.5, 8)]);
+    for junk in ["last time", "recently", "the last session"] {
+        let h = call(&w, "alice", "get_exercise_history", json!({ "exercise": "bench", "since": junk })).unwrap();
+        assert_eq!(h["session_count"], 2, "{junk}");
+        assert!(h["note"].as_str().unwrap().contains(&format!("{junk:?}")) && h["note"].as_str().unwrap().contains("ignored"), "{h}");
+    }
+    let t = call(&w, "alice", "get_test_history", json!({ "kind": "beep", "since": "ever" })).unwrap();
+    assert_eq!(t["count"], 2);
+    assert!(t["note"].as_str().unwrap().contains("ignored"));
+    // A date in the future is still an error, and a good date still filters.
+    assert!(call(&w, "alice", "get_exercise_history", json!({ "exercise": "bench", "since": "next week" })).is_err());
+    assert_eq!(call(&w, "alice", "get_exercise_history", json!({ "exercise": "bench", "since": "2026-10-01" })).unwrap()["session_count"], 1);
 }

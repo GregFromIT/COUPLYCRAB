@@ -8,7 +8,9 @@
 
 pub mod agent;
 pub mod demo;
+pub mod eval;
 pub mod llm;
+pub mod seed;
 pub mod tools;
 
 pub use demo::DemoLlm;

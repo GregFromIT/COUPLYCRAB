@@ -18,6 +18,24 @@ Nothing here was done by the build run: it changes Tailscale config or another m
 - [ ] Optional: **Tailscale ACL** so only your two users' devices can reach the host (https://tailscale.com/kb/1018/acls).
 - [ ] Optional: **move existing v0 data** to the host by copying `todo.automerge` / `fitness.automerge` from a v0 device's data dir, or by adding the host to that device's `peers` and letting v0 sync merge them.
 
+## v2 owner setup (PLAN-v2)
+
+The v1 steps above still apply. v2 adds a second restart of the host (new binary), the assistant, and one decision about old data. Nothing here was done by the build run.
+
+- [ ] **Rebuild and replace the binary on the host** (`cd web && npm install && npm run build`, then `cargo build --release -p peer`). Restart `peer serve`. Existing data loads unchanged (schema 2 → 3 only adds things); take a copy of the data dir first if you want a way back.
+- [ ] **Move your v1 training data into programs.** Open the app → Fitness → Programs. If you have v1 blocks you'll see *Migrate to programs*; it lists what could not be carried over (v1's linear progression, fixed target loads and the deload percentage; v2 recommends loads from your logged sessions instead). Run it once, check the program, and edit it (rep ranges, RIR, days). Afterwards the old Plan/Blocks/Templates endpoints answer `410 Gone`. Past sessions are kept as they are. Same thing from a terminal: `peer fitness migrate-v1 --config <path>` (it can run while the server is up).
+- [ ] **Set up your gym** (Programs → Gyms): bar weight, plates per side, dumbbell and machine increments. Recommendations are rounded down to loads that gym can actually make, so this matters before you trust them. Without a gym the app assumes a 20 kg bar, 1.25–25 kg plates, 2 kg dumbbell steps and 5 kg machine steps.
+- [ ] **Give exercises muscles and equipment** (Exercises). Weekly volume and warm-up suggestions use the primary and secondary muscles; the equipment decides how loads are rounded.
+- [ ] **If a v0 desktop app or a v1 host syncs with this host,** add `sync_shopping = false` to its `config.toml` (they drop the connection on the new shopping document; see the section below). Phones and laptops using the web app are not affected.
+- [ ] **Assistant (optional).** It answers questions about training, todos and shopping from a local model and can only read.
+  1. Install Ollama: https://ollama.com/download (on the machine that will run the model; it already runs on this laptop, version 0.40.3).
+  2. If Ollama runs on a different machine from `peer serve`: make it listen on that machine's Tailscale address, `OLLAMA_HOST=<tailnet IPv4>:11434` (https://docs.ollama.com/faq, "How can I expose Ollama on my network?"), and add a Tailscale ACL so only the web host can reach port 11434 (https://tailscale.com/kb/1018/acls). **Ollama has no login**: never `0.0.0.0`, and never expose it beyond the tailnet. If it runs on the same machine, leave the default `127.0.0.1:11434`.
+  3. Optional: `OLLAMA_NO_CLOUD=1` so it never calls a hosted model (https://docs.ollama.com/faq).
+  4. Pull a model that supports tools: `ollama pull qwen3:8b` (the plan's default; size to taste and VRAM). Check with `ollama show <model>` that "tools" is among its capabilities.
+  5. Add to `config.toml`: `[assistant]` with `url = "http://127.0.0.1:11434"` and `model = "qwen3:8b"` (`http://` only), restart `peer serve`, open the Assistant tab.
+  6. Try the screen without a model first with `peer serve --fake-llm` (a keyword demo, clearly labelled).
+  7. Measure a model on your data: `cargo run -p assistant-core --example eval -- --config <config.toml>` (24 questions, a few minutes; see `docs/DECISIONS.md` "Live eval (v2-M8)" for what was run here and how the models compared).
+
 ## Node.js 16 is end-of-life (not blocking)
 
 `node --version` → v16.13.0. Current Vite needs Node 18+, so both frontends (`app/` v0, `web/` v1) pin Vite 4.5.14. To move to current Vite, install Node LTS from https://nodejs.org/ (GUI installer, so not done in a build run), then bump `vite` in `web/package.json`.
