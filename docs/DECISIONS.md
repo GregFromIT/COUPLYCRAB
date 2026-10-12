@@ -50,7 +50,7 @@ Fitness logs are append-mostly and wouldn't strictly need a CRDT: per-device app
 ## Schema evolution rules (PLAN §3.15)
 
 - Every doc has root `schema_version: u32` (currently 1).
-- Additive changes only. New fields are `Option<T>` (autosurgeon hydrates a missing key as `None`).
+- Additive changes only. New fields are `Option<T>` **and** carry `#[autosurgeon(missing = "Default::default")]`. (Corrected in v1: the v0 note claimed autosurgeon hydrates a missing key as `None`. It doesn't: the derived `Hydrate` fails with "unexpected nothing at all, expected a ScalarValue::Null". Caught by the v1 test that loads a real v0 doc, `crates/fitness-core/tests/v0_doc.rs`. Attribute: autosurgeon-derive 0.14 `attrs.rs`, `missing`.)
 - Never rename or repurpose a field.
 - Unknown enum variants hydrate to `Unknown(String)` instead of failing; the original string is preserved and written back unchanged.
 - autosurgeon's derived struct reconcile only writes known fields and never deletes unknown keys, so an older build editing a todo leaves newer fields intact (checked in `autosurgeon-derive-0.14.0/src/reconcile`: only enum reconcile calls `retain`).
@@ -111,3 +111,21 @@ Not built (PLAN says minimal); listed so they aren't forgotten.
 - Tagged `v0` at `629b113` before any v1 change. `cargo test --workspace` passed (22 tests).
 - Carried forward from v0's BLOCKERS.md: Node 16 is EOL (frontend stays on Vite 4.5.14), Android SDK not installed (irrelevant for v1: the web app replaces the Android build).
 - `crates/fitness-core/tests/fixtures/fitness-v0.automerge` was produced by the v0 `fitness-core` code (unchanged since tag `v0`) with a throwaway example program: one exercise, a template, a finished session with one set, one beep test. It's the input of the "v0 doc loads in v1" test. `.gitignore` has an exception for `tests/fixtures/*.automerge`.
+
+## Fitness planning core (v1-M1)
+
+- **Schema 2 via a second deterministic init change.** `init_doc()` change 1 is byte-identical to v0's (schema 1, four maps). Change 2 (same all-zero actor, seq 2, time 0) sets `schema_version = 2` and creates `plans`, `blocks`, `external_activities`. Every device and every upgraded v0 doc produce the same change 2, so the new maps share one object ID (same reason as v0's init; tested by `v0_doc_and_fresh_v1_device_converge`). A v0 peer receiving change 2 ignores the unknown maps.
+- **Every schema-2 field is `Option` + `#[autosurgeon(missing = "Default::default")]`** (see the corrected schema rule above).
+- **One weekly plan per user**, stored at `plans.<user_id>`. A block "repeats its owner's weekly plan" implicitly, so there's no `plan_id` on `Block`: with one plan per user it would always equal `user_id`. Editing the plan mid-block changes the rest of that block. Add `plan_id` (additively) if users ever want several plans.
+- **Plan slots** are a map keyed `mon_am` … `sun_pm` (`SLOT_KEYS`); each slot has exactly one of `template_id` / `external_label`. Missing key = empty slot. Keyed map, not list, so two devices editing different slots both survive (`concurrent_plan_edits_converge`).
+- **Progression** is stored as `{ kind: "LinearLoad" | "LinearReps", per_week: f64 }` (the plan's `LinearLoad { kg_per_week }` / `LinearReps { reps_per_week }`), not a Rust data-carrying enum, so an unknown future `kind` hydrates to `Unknown` and the item falls back to base targets instead of failing the whole doc. `LinearReps` adds `floor(per_week × weeks)`, so 0.5/week gives +1 every two weeks.
+- **Deload:** load × `deload_pct / 100` in the deload week; reps unchanged; the deload week doesn't count as a progression step. Block validation: start is a Monday, 1–104 weeks, deload week inside the block, `deload_week` and `deload_pct` set together. Loads are rounded to 0.01 kg.
+- **Overlapping blocks:** the one that started last wins (ties: higher ID). Deterministic; no validation against overlap.
+- **Outside a block, `planned_for` returns an empty day**, even if a weekly plan exists (PLAN-v1 §2.4).
+- **A plan slot pointing at a deleted/missing template is skipped** in `planned_for` rather than failing the day. `set_plan` rejects unknown template IDs at write time.
+- **External sessions** (plan slot with a label) are logged as a normal `Session` with `label` set, no sets, finished `Completed` with the note. Additive `label` field on `Session`, beyond the plan's `block_id`/`block_week`/`slot`, because otherwise "attended Unit PT" isn't distinguishable from an empty blank session.
+- **`ExternalActivity`** has a `user_id` (not in the plan's field list): activities are per person, and upserting someone else's activity returns `NotOwner`. Key `"{source}:{source_id}"`; `source` may not contain `:`. No list/get API beyond the upsert (none is needed yet).
+- **Idempotent creates in the store** (`put_*` → `Write::{Created, Unchanged}` or `Error::Conflict`). "Same content" ignores server-assigned fields: session `started_at`/status/sets, set `index`, template item IDs. The v0 methods (`add_exercise`, `start_session`, …) remain as default trait methods that generate an ID and call `put_*`, so the frozen v0 Tauri app and `peer` CLI still compile unchanged.
+- **`finish_session` is idempotent**: same status + note again changes nothing.
+- **Beep scores** are validated on new writes: level 1–21, shuttle 1..=shuttles in that level (old v0 results aren't re-validated). `SHUTTLES_PER_LEVEL` in `crates/fitness-core/src/lib.rs` is the single table, from https://www.topendsports.com/testing/beep-table.htm (20 m test, level 1 at 8.0 km/h). It's used for validation and for `BeepScore::plot_value` (`level + shuttle / shuttles_in_level`), which the API returns so the frontend never needs its own copy.
+- **chrono `=0.4.45`** (`default-features = false`, `std` + `clock`) for `NaiveDate` / weekdays. Changelog: https://github.com/chronotope/chrono/releases
