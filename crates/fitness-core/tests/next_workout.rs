@@ -146,6 +146,11 @@ fn rest_day_and_no_program() {
     assert_eq!((chosen(&n), n.reason.as_str()), (None, "Rest day: nothing is pinned for today."));
     assert_eq!(n.program_id.as_deref(), Some("p"));
 
+    // Only an outside session pinned: still no lifting workout, and the reason says so.
+    let s2 = setup(vec![workout("a", 0, Some("mon_am"), None, ""), workout("pt", 1, Some("wed_pm"), Some("Unit PT"), "")]);
+    let n = next(&s2, "2026-10-07");
+    assert_eq!((chosen(&n), n.reason.as_str(), n.externals.len()), (None, "Only an outside session is planned today.", 1));
+
     let n = next(&s, "2026-12-01"); // after the 4 weeks
     assert_eq!((n.program_id, n.workout, n.week), (None, None, None));
     assert_eq!(n.reason, "No program is running on this date.");

@@ -59,17 +59,23 @@ export const api = {
   putExercise: (id: string, e: Record<string, unknown>) => req<any>("PUT", `/exercises/${id}`, e),
   patchExercise: (id: string, e: Record<string, unknown>) => req<any>("PATCH", `/exercises/${id}`, e),
 
-  templates: () => req<any[]>("GET", "/templates"),
-  putTemplate: (id: string, t: Record<string, unknown>) => req<any>("PUT", `/templates/${id}`, t),
+  gymProfiles: () => req<any[]>("GET", "/gym-profiles"),
+  putGym: (id: string, g: Record<string, unknown>) => req<any>("PUT", `/gym-profiles/${id}`, g),
+  patchGym: (id: string, g: Record<string, unknown>) => req<any>("PATCH", `/gym-profiles/${id}`, g),
 
-  plan: () => req<any>("GET", "/plan"),
-  putPlan: (slots: Record<string, unknown>) => req<any>("PUT", "/plan", { slots }),
+  programs: () => req<any[]>("GET", "/programs"),
+  putProgram: (id: string, p: Record<string, unknown>) => req<any>("PUT", `/programs/${id}`, p),
+  patchProgram: (id: string, p: Record<string, unknown>) => req<any>("PATCH", `/programs/${id}`, p),
+  migrateV1: () => req<{ created: number; notes: string[] }>("POST", "/programs/migrate-v1"),
+  /** v1 blocks, to offer the migration. 410 once programs exist. */
+  v1Blocks: () => req<any[]>("GET", "/blocks"),
 
-  blocks: () => req<any[]>("GET", "/blocks"),
-  putBlock: (id: string, b: Record<string, unknown>) => req<any>("PUT", `/blocks/${id}`, b),
-  patchBlock: (id: string, b: Record<string, unknown>) => req<any>("PATCH", `/blocks/${id}`, b),
-
-  plannedDay: (date?: string) => req<any>("GET", `/planned-day${q({ date })}`),
+  nextWorkout: (date?: string) => req<any>("GET", `/workouts/next${q({ date })}`),
+  recommendations: (program_id: string, workout_id: string, date?: string) =>
+    req<any>("GET", `/recommendations${q({ program_id, workout_id, date })}`),
+  volume: (weeks: number) => req<any>("GET", `/analytics/volume${q({ weeks: String(weeks) })}`),
+  e1rm: (exercise_id: string) => req<any>("GET", `/analytics/e1rm${q({ exercise_id })}`),
+  prs: () => req<any[]>("GET", "/prs"),
 
   sessions: (since?: string) => req<any[]>("GET", `/sessions${q({ since, limit: "50" })}`),
   putSession: (id: string, s: Record<string, unknown>) => req<any>("PUT", `/sessions/${id}`, s),

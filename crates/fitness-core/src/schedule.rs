@@ -103,7 +103,7 @@ pub(crate) fn next_workout(
             .max();
         match (rotation.is_empty(), last) {
             (true, _) => {
-                out.reason = "Rest day: nothing is pinned for today.".into();
+                out.reason = if out.externals.is_empty() { "Rest day: nothing is pinned for today." } else { "Only an outside session is planned today." }.into();
                 None
             }
             (false, None) => {
