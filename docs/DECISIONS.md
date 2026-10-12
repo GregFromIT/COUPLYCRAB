@@ -55,6 +55,21 @@ Fitness logs are append-mostly and wouldn't strictly need a CRDT: per-device app
 - Unknown enum variants hydrate to `Unknown(String)` instead of failing; the original string is preserved and written back unchanged.
 - autosurgeon's derived struct reconcile only writes known fields and never deletes unknown keys, so an older build editing a todo leaves newer fields intact (checked in `autosurgeon-derive-0.14.0/src/reconcile`: only enum reconcile calls `retain`).
 
+## Sync (M3)
+
+- **Duplicate connections are allowed.** Both peers dial each other and both accept, so a pair can have two connections. Each runs the sync protocol; the second is redundant but harmless. Deduplicating needs a stable peer identity on both sides (MagicDNS name vs. resolved IP); not worth it at four devices.
+- **`sync::State` is per connection** (so per peer, per doc, for that connection's lifetime), not persisted across reconnects. A fresh state costs one extra round trip; persisting adds a file per peer.
+- **Allowlist = `peers` list**, resolved with `tokio::net::lookup_host` on every accept (MagicDNS answers locally; picks up IP changes). https://docs.rs/tokio/1.53.2/tokio/net/fn.lookup_host.html
+- **Bind check** rejects anything but 100.64.0.0/10 (Tailscale's address range, https://tailscale.com/kb/1015/100.x-addresses) and loopback. Loopback is allowed for tests and the one-machine demo.
+- **`listen_port` config option (default 7420) and `host:port` peer entries.** Not in PLAN §3.13, but two peers on one machine (M4 demo) can't share a port.
+- **Reconnect backoff:** 1 s doubling to a 30 s cap, reset after a successful connection. The 30 s poll tick also runs inside each connection.
+- **Remote changes fan out:** a change received from peer A wakes every connection, so peer B gets it without waiting for the poll.
+- **Config and persistence live in the `sync` crate** (`config.rs`, `persist.rs`). Both are docs-as-bytes concerns shared by `peer` and `app`; the cores stay free of I/O.
+- **Persistence merges before writing, under a file lock.** `persist::save` takes an exclusive `std::fs::File::lock` (stable since Rust 1.89, https://doc.rust-lang.org/std/fs/struct.File.html#method.lock) on `<doc>.automerge.lock`, merges the on-disk doc, then writes temp + rename. So `peer todo add` while `peer run` is running can't lose either side's changes. `std::fs::rename` replaces the target on Windows and Unix: https://doc.rust-lang.org/std/fs/fn.rename.html
+- **A corrupt doc file is an error**, never silently replaced with an empty doc.
+- **No logging crate:** connection errors go to stderr with `eprintln!`.
+- **No `catch_unwind` around Automerge.** If automerge itself panicked on hostile input, the doc mutex would be poisoned and that doc's sync would stop with an error rather than continue on a half-applied doc. Not observed in tests.
+
 ## Suggested for later
 
 - (filled in as the run goes)
