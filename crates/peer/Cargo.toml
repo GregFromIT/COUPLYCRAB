@@ -3,13 +3,23 @@ name = "peer"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "peer_app"
+path = "src/lib.rs"
+
 [dependencies]
 sync = { path = "../sync" }
 todo-core = { path = "../todo-core" }
 fitness-core = { path = "../fitness-core" }
+shopping-core = { path = "../shopping-core" }
 tokio.workspace = true
 web = { path = "../web" }
 axum.workspace = true
 serde.workspace = true
 chrono.workspace = true
 toml.workspace = true
+
+[dev-dependencies]
+tower = { version = "=0.5.3", features = ["util"] }
+http-body-util = "=0.1.5"
+serde_json.workspace = true

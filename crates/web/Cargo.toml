@@ -6,6 +6,8 @@ edition = "2024"
 [dependencies]
 todo-core = { path = "../todo-core" }
 fitness-core = { path = "../fitness-core" }
+shopping-core = { path = "../shopping-core" }
+futures-util = "=0.3.34"
 axum.workspace = true
 tokio.workspace = true
 serde.workspace = true

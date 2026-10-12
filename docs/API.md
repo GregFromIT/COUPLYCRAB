@@ -1,16 +1,16 @@
 # Data API
 
-JSON over HTTP, served by `peer serve` under `/api/v1` (the path stays `v1`; v2 only adds endpoints and fields, and retires some). The web frontend uses only this API (`web/src/api.ts`), and the v2 assistant's tools are built from the **read-only** endpoints. Code: `crates/web/src/api.rs` (todos, exercises, sessions, tests), `crates/web/src/training.rs` (v2 training), `crates/web/src/identity.rs`.
+JSON over HTTP, served by `peer serve` under `/api/v1` (the path stays `v1`; v2 only adds endpoints and fields, and retires some). The web frontend uses only this API (`web/src/api.ts`), and the v2 assistant's tools are built from the **read-only** endpoints. Code: `crates/web/src/api.rs` (todos, exercises, sessions, tests), `crates/web/src/training.rs` (v2 training), `crates/web/src/shopping.rs` and `crates/web/src/events.rs` (v2 shopping and live updates), `crates/web/src/identity.rs`.
 
 Every example below is a real request against `peer serve --dev-user alice` (`timezone = "Australia/Sydney"`, run on 2026-10-12), in the order shown. The v1 examples come from an empty data dir; the v2 section (at the end) from another fresh one, and its migration examples from a data dir holding a real v1 document. Long lists are cut to two entries plus `"…"`.
 
 ## Conventions
 
-**Read-only endpoints** (safe for an assistant to call freely): every `GET`. That's `/health`, `/me`, `/todos`, `/exercises`, `/sessions`, `/sessions/{id}`, `/tests`, and in v2 `/gym-profiles`, `/programs`, `/programs/{id}`, `/workouts/next`, `/recommendations`, `/analytics/volume`, `/analytics/e1rm`, `/prs` (plus the v1 `/templates`, `/templates/{id}`, `/plan`, `/blocks`, `/planned-day`, `/program-status` until they are retired; see below). Recommendations and analytics are computed from your logs on every read: nothing is stored, and asking changes nothing.
+**Read-only endpoints** (safe for an assistant to call freely): every `GET`. That's `/health`, `/me`, `/todos`, `/exercises`, `/sessions`, `/sessions/{id}`, `/tests`, and in v2 `/gym-profiles`, `/programs`, `/programs/{id}`, `/workouts/next`, `/recommendations`, `/analytics/volume`, `/analytics/e1rm`, `/prs`, and the shopping endpoints `/lists`, `/lists/{id}/items`, `/lists/{id}/suggestions` and the `/events` stream (plus the v1 `/templates`, `/templates/{id}`, `/plan`, `/blocks`, `/planned-day`, `/program-status` until they are retired; see below). Recommendations and analytics are computed from your logs on every read: nothing is stored, and asking changes nothing.
 
 **Identity.** The current user comes from `--dev-user`, else the `Tailscale-User-Login` header that `tailscale serve` adds (mapped through `[web.users]` in `config.toml`), else the picker cookie (`PUT /me`). Without one, every endpoint except `/health` and `/me` returns `401 no_user`. See `docs/LEARNING.md` v1.3.
 
-**Shared vs per-user.** Todos and exercises (and v1 templates) are shared: either user can change them. Gym profiles, programs, sessions, tests and external activities (and v1 plans and blocks) belong to a user. Reads default to the current user; `?user=<id>` reads the other user's. Writing the other user's resource returns `403`.
+**Shared vs per-user.** Todos, exercises, shopping lists (and v1 templates) are shared: either user can change them. Gym profiles, programs, sessions, tests and external activities (and v1 plans and blocks) belong to a user. Reads default to the current user; `?user=<id>` reads the other user's. Writing the other user's resource returns `403`.
 
 **Creating = `PUT` with a client-generated ID** (e.g. `crypto.randomUUID()`; IDs are 1–64 chars of `A-Z a-z 0-9 - _`). First time: `201` + the resource. Same request again: `200`, nothing changes. Same ID with different content: `409 conflict` (use `PATCH` to change things). So a retried request can never create a duplicate. See `docs/LEARNING.md` v1.2.
 
@@ -2577,4 +2577,478 @@ curl -s -X PUT http://127.0.0.1:7430/api/v1/blocks/b9 \
   },
   "replacement": "/api/v1/programs"
 }
+```
+
+---
+
+## Shopping lists and live updates (v2)
+
+Shared by both users. Lists have items; an item has a `name`, optional `quantity` (free text such as `2` or `500 g`), `note` and `category` (`produce meat dairy bakery pantry frozen household other`), and a tick (`checked`, `checked_by`, `checked_at`). A list comes back **unticked first, then by category (in that order, uncategorised last), then by name**. Code: `crates/web/src/shopping.rs`, `crates/shopping-core`. Item IDs are chosen by the client (same `PUT` rules as everywhere: 201 / 200 / 409) and are unique across all lists.
+
+**Two people at once.** The tick is a single value (who and when together), so if both of you tick the same item at the same moment you both end up with the same result: ticked, by one of you. Ticking a ticked item changes nothing. *Clear checked* hides the items that were ticked when it ran; an item the other person unticked, or ticked again, a moment later stays on the list. See `docs/LEARNING.md` "Last-writer-wins on a single field".
+
+
+### PUT /lists/{id}
+
+Create a list. Same rules as other `PUT`s. The response counts the items on the list: `total` and `unchecked`. (The web app creates a list with the ID `groceries` the first time it is opened, so two devices doing so at once make the same list.)
+
+```sh
+curl -s -X PUT http://127.0.0.1:7430/api/v1/lists/groceries \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "Groceries"}'
+```
+
+`201` (created)
+
+```json
+{
+  "id": "groceries",
+  "name": "Groceries",
+  "created_at": 1791802280628,
+  "unchecked": 0,
+  "total": 0
+}
+```
+
+```sh
+curl -s -X PUT http://127.0.0.1:7430/api/v1/lists/groceries \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "Groceries"}'
+```
+
+`200` (repeat: unchanged)
+
+```json
+{
+  "id": "groceries",
+  "name": "Groceries",
+  "created_at": 1791802280628,
+  "unchecked": 0,
+  "total": 0
+}
+```
+
+```sh
+curl -s -X PUT http://127.0.0.1:7430/api/v1/lists/groceries \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "Food"}'
+```
+
+`409` (same ID, different name)
+
+```json
+{
+  "error": {
+    "code": "conflict",
+    "message": "groceries already exists with different content"
+  }
+}
+```
+
+
+### GET /lists
+
+**Read-only.**
+
+Lists by name, with counts.
+
+```sh
+curl -s 'http://127.0.0.1:7430/api/v1/lists'
+```
+
+`200`
+
+```json
+[
+  {
+    "id": "bunnings",
+    "name": "Bunnings",
+    "created_at": 1791802280652,
+    "unchecked": 0,
+    "total": 0
+  },
+  {
+    "id": "groceries",
+    "name": "Groceries",
+    "created_at": 1791802280628,
+    "unchecked": 0,
+    "total": 0
+  }
+]
+```
+
+
+### PATCH /lists/{id}
+
+`name`, and/or `deleted: true` (a deleted list cannot be restored; its items stay in the document).
+
+```sh
+curl -s -X PATCH http://127.0.0.1:7430/api/v1/lists/bunnings \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "Hardware"}'
+```
+
+`200`
+
+```json
+{
+  "id": "bunnings",
+  "name": "Hardware",
+  "created_at": 1791802280652,
+  "unchecked": 0,
+  "total": 0
+}
+```
+
+
+### PUT /lists/{id}/items/{item_id}
+
+Add an item. `name` required (≤ 200 characters); `quantity` ≤ 50, `note` ≤ 500, `category` from the list above. The user who adds it is recorded as `added_by`.
+
+```sh
+curl -s -X PUT http://127.0.0.1:7430/api/v1/lists/groceries/items/milk \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "Milk", "quantity": "2 L", "category": "dairy"}'
+```
+
+`201` (created)
+
+```json
+{
+  "id": "milk",
+  "list_id": "groceries",
+  "name": "Milk",
+  "quantity": "2 L",
+  "note": null,
+  "category": "dairy",
+  "checked": false,
+  "checked_by": null,
+  "checked_at": null,
+  "added_by": "alice",
+  "added_at": 1791802280671
+}
+```
+
+```sh
+curl -s -X PUT http://127.0.0.1:7430/api/v1/lists/groceries/items/milk \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "Milk", "quantity": "2 L", "category": "dairy"}'
+```
+
+`200` (repeat: unchanged)
+
+```json
+{
+  "id": "milk",
+  "list_id": "groceries",
+  "name": "Milk",
+  "quantity": "2 L",
+  "note": null,
+  "category": "dairy",
+  "checked": false,
+  "checked_by": null,
+  "checked_at": null,
+  "added_by": "alice",
+  "added_at": 1791802280671
+}
+```
+
+```sh
+curl -s -X PUT http://127.0.0.1:7430/api/v1/lists/groceries/items/milk \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "Milk", "quantity": "3 L", "category": "dairy"}'
+```
+
+`409` (same ID, different content)
+
+```json
+{
+  "error": {
+    "code": "conflict",
+    "message": "milk already exists with different content"
+  }
+}
+```
+
+```sh
+curl -s -X PUT http://127.0.0.1:7430/api/v1/lists/groceries/items/chips \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "Chips", "category": "snacks"}'
+```
+
+`400` (unknown category)
+
+```json
+{
+  "error": {
+    "code": "invalid",
+    "message": "invalid category \"snacks\", expected one of produce, meat, dairy, bakery, pantry, frozen, household, other"
+  }
+}
+```
+
+
+### GET /lists/{id}/items
+
+**Read-only.**
+
+The items on the list (not deleted, and not cleared), in list order.
+
+```sh
+curl -s 'http://127.0.0.1:7430/api/v1/lists/groceries/items'
+```
+
+`200`
+
+```json
+[
+  {
+    "id": "apples",
+    "list_id": "groceries",
+    "name": "Apples",
+    "quantity": "6",
+    "note": null,
+    "category": "produce",
+    "checked": false,
+    "checked_by": null,
+    "checked_at": null,
+    "added_by": "alice",
+    "added_at": 1791802280696
+  },
+  {
+    "id": "milk",
+    "list_id": "groceries",
+    "name": "Milk",
+    "quantity": "2 L",
+    "note": null,
+    "category": "dairy",
+    "checked": false,
+    "checked_by": null,
+    "checked_at": null,
+    "added_by": "alice",
+    "added_at": 1791802280671
+  },
+  {
+    "id": "soap",
+    "list_id": "groceries",
+    "name": "Dish soap",
+    "quantity": null,
+    "note": null,
+    "category": "household",
+    "checked": false,
+    "checked_by": null,
+    "checked_at": null,
+    "added_by": "alice",
+    "added_at": 1791802280707
+  }
+]
+```
+
+
+### PATCH /lists/{id}/items/{item_id}
+
+Change `name`, `quantity`, `note` or `category` (`null` clears the last three), and/or tick or untick with `checked`. Ticking records the current user and the time.
+
+```sh
+curl -s -X PATCH http://127.0.0.1:7430/api/v1/lists/groceries/items/apples \
+  -H 'Content-Type: application/json' \
+  -d '{"checked": true}'
+```
+
+`200` (tick)
+
+```json
+{
+  "id": "apples",
+  "list_id": "groceries",
+  "name": "Apples",
+  "quantity": "6",
+  "note": null,
+  "category": "produce",
+  "checked": true,
+  "checked_by": "alice",
+  "checked_at": 1791802280727,
+  "added_by": "alice",
+  "added_at": 1791802280696
+}
+```
+
+```sh
+curl -s -X PATCH http://127.0.0.1:7430/api/v1/lists/groceries/items/milk \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "Oat milk", "note": "unsweetened", "quantity": null}'
+```
+
+`200`
+
+```json
+{
+  "id": "milk",
+  "list_id": "groceries",
+  "name": "Oat milk",
+  "quantity": null,
+  "note": "unsweetened",
+  "category": "dairy",
+  "checked": false,
+  "checked_by": null,
+  "checked_at": null,
+  "added_by": "alice",
+  "added_at": 1791802280671
+}
+```
+
+```sh
+curl -s -X PATCH http://127.0.0.1:7430/api/v1/lists/bunnings/items/milk \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "x"}'
+```
+
+`404` (that item is on another list)
+
+```json
+{
+  "error": {
+    "code": "not_found",
+    "message": "milk not found"
+  }
+}
+```
+
+
+### DELETE /lists/{id}/items/{item_id}
+
+Remove an item (it stays in suggestion history). `204`, also when repeated.
+
+```sh
+curl -s -X DELETE http://127.0.0.1:7430/api/v1/lists/groceries/items/typo -H 'Content-Type: application/json'
+```
+
+`204`
+
+
+### POST /lists/{id}/clear-checked
+
+Hide the ticked items from the list; returns how many. They stay in the document and are offered by `suggestions` again.
+
+```sh
+curl -s -X POST http://127.0.0.1:7430/api/v1/lists/groceries/clear-checked \
+  -H 'Content-Type: application/json' \
+  -d '{}'
+```
+
+`200`
+
+```json
+{
+  "cleared": 1
+}
+```
+
+```sh
+curl -s 'http://127.0.0.1:7430/api/v1/lists/groceries/items'
+```
+
+`200` (Apples are gone)
+
+```json
+[
+  {
+    "id": "milk",
+    "list_id": "groceries",
+    "name": "Oat milk",
+    "quantity": null,
+    "note": "unsweetened",
+    "category": "dairy",
+    "checked": false,
+    "checked_by": null,
+    "checked_at": null,
+    "added_by": "alice",
+    "added_at": 1791802280671
+  },
+  {
+    "id": "soap",
+    "list_id": "groceries",
+    "name": "Dish soap",
+    "quantity": null,
+    "note": null,
+    "category": "household",
+    "checked": false,
+    "checked_by": null,
+    "checked_at": null,
+    "added_by": "alice",
+    "added_at": 1791802280707
+  }
+]
+```
+
+
+### GET /lists/{id}/suggestions
+
+**Read-only.**
+
+Names to autocomplete the quick-add box, derived from every item ever added to this list (including cleared and deleted ones): `q` is matched case-insensitively anywhere in the name, names that **start** with `q` first, then the ones added most often; names currently on the list are left out. `limit` 1–20, default 8. Nothing is stored for this.
+
+```sh
+curl -s 'http://127.0.0.1:7430/api/v1/lists/groceries/suggestions?q=app'
+```
+
+`200`
+
+```json
+[
+  "Apples"
+]
+```
+
+```sh
+curl -s 'http://127.0.0.1:7430/api/v1/lists/groceries/suggestions?q=milk'
+```
+
+`200` (Oat milk is on the list)
+
+```json
+[]
+```
+
+```sh
+curl -s 'http://127.0.0.1:7430/api/v1/lists/groceries/suggestions'
+```
+
+`200`
+
+```json
+[
+  "Apples",
+  "Bred"
+]
+```
+
+
+### GET /events
+
+**Read-only.** A Server-Sent Events stream (`Content-Type: text/event-stream`) that says when a document changed, so an open screen can refetch instead of polling. Browsers: `new EventSource("/api/v1/events")` (it reconnects by itself). Needs an identity like every other endpoint (`401` otherwise; note that `EventSource` does not retry after an error status).
+
+Each message is one JSON object, `{"doc": "todo" | "fitness" | "shopping", "version": <n>}`. It is sent whenever that document changes: a write through this API, changes merged in from another device, or an edit made on disk by another process (`peer todo add`). `version` is a per-document counter that restarts with the server; treat it only as "it moved".
+
+* When a client connects (and so every time `EventSource` reconnects), it first gets one message per document with the current counter. That is the cue to refetch what was missed while disconnected.
+* A client that cannot keep up is not dropped: it gets those same three messages again.
+* A comment line `: keep-alive` is sent every 15 seconds so proxies (`tailscale serve`) leave an idle stream open.
+* Rejected writes (400, 409, ...) change nothing and send nothing.
+
+Captured from the real server with one terminal streaming and another adding things (`curl -s -N http://127.0.0.1:7430/api/v1/events`):
+
+```
+data: {"doc":"todo","version":0}
+
+data: {"doc":"fitness","version":0}
+
+data: {"doc":"shopping","version":0}
+
+data: {"doc":"shopping","version":1}      <- PUT /lists/groceries
+
+data: {"doc":"shopping","version":2}      <- PUT .../items/milk
+
+data: {"doc":"todo","version":1}          <- PUT /todos/t1
+
+: keep-alive
 ```

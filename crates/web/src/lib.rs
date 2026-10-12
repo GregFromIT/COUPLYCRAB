@@ -4,10 +4,13 @@
 //! trigger, provided by the caller) → respond. See docs/API.md.
 
 mod api;
-mod training;
 mod assets;
+mod events;
 mod identity;
+mod shopping;
+mod training;
 
+pub use events::Events;
 pub use identity::decode_rfc2047;
 
 use axum::{
@@ -25,6 +28,7 @@ use std::{
     net::SocketAddr,
     sync::{Arc, Mutex},
 };
+use shopping_core::ShoppingStore;
 use todo_core::TodoStore;
 
 pub const BODY_LIMIT: usize = 64 * 1024;
@@ -87,6 +91,24 @@ impl WebConfig {
 pub enum DocKind {
     Todo,
     Fitness,
+    Shopping,
+}
+
+impl DocKind {
+    pub const ALL: [DocKind; 3] = [DocKind::Todo, DocKind::Fitness, DocKind::Shopping];
+
+    /// The name used in `/events` messages.
+    pub fn name(self) -> &'static str {
+        match self {
+            DocKind::Todo => "todo",
+            DocKind::Fitness => "fitness",
+            DocKind::Shopping => "shopping",
+        }
+    }
+
+    pub(crate) fn index(self) -> usize {
+        self as usize
+    }
 }
 
 pub type SavedHook = Arc<dyn Fn(DocKind) -> Result<(), String> + Send + Sync>;
@@ -99,6 +121,9 @@ pub struct AppState(Arc<Inner>);
 pub struct Inner {
     pub todo: Arc<Mutex<dyn TodoStore + Send>>,
     pub fit: Arc<Mutex<dyn FitnessStore + Send>>,
+    pub shopping: Arc<Mutex<dyn ShoppingStore + Send>>,
+    /// Tell it when a doc changed by other means too (a peer merge): see `Events`.
+    pub events: Events,
     /// Called after each successful write: persist the doc and trigger sync.
     pub saved: SavedHook,
     pub web: WebConfig,
@@ -111,9 +136,12 @@ pub struct Inner {
 }
 
 impl AppState {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         todo: Arc<Mutex<dyn TodoStore + Send>>,
         fit: Arc<Mutex<dyn FitnessStore + Send>>,
+        shopping: Arc<Mutex<dyn ShoppingStore + Send>>,
+        events: Events,
         saved: SavedHook,
         web: WebConfig,
         default_user: &str,
@@ -126,7 +154,7 @@ impl AppState {
         let mut users: BTreeSet<String> = web.users.values().flat_map(|u| u.ids()).collect();
         users.insert(default_user.to_string());
         users.extend(dev_user.clone());
-        Ok(AppState(Arc::new(Inner { todo, fit, saved, web, tz, known_users: users.into_iter().collect(), dev_user, now: Utc::now })))
+        Ok(AppState(Arc::new(Inner { todo, fit, shopping, events, saved, web, tz, known_users: users.into_iter().collect(), dev_user, now: Utc::now })))
     }
 
     /// Replace the clock (tests).
@@ -187,6 +215,18 @@ impl IntoResponse for ApiError {
 impl From<todo_core::Error> for ApiError {
     fn from(e: todo_core::Error) -> Self {
         use todo_core::Error::*;
+        match &e {
+            NotFound(_) => Self::new(StatusCode::NOT_FOUND, "not_found", e.to_string()),
+            Invalid(_) => Self::bad(e.to_string()),
+            Conflict(_) => Self::new(StatusCode::CONFLICT, "conflict", e.to_string()),
+            Automerge(_) => Self::internal(e.to_string()),
+        }
+    }
+}
+
+impl From<shopping_core::Error> for ApiError {
+    fn from(e: shopping_core::Error) -> Self {
+        use shopping_core::Error::*;
         match &e {
             NotFound(_) => Self::new(StatusCode::NOT_FOUND, "not_found", e.to_string()),
             Invalid(_) => Self::bad(e.to_string()),

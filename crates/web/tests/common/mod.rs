@@ -17,25 +17,32 @@ use std::{
         Arc, Mutex,
     },
 };
+use shopping_core::AmShoppingStore;
 use todo_core::AmTodoStore;
 use tower::ServiceExt;
-use web::{AppState, OneOrMany, WebConfig};
+use web::{AppState, Events, OneOrMany, WebConfig};
 
 pub struct App {
     pub router: Router,
     pub saves: Arc<AtomicUsize>,
     pub todo: Arc<Mutex<AmTodoStore>>,
     pub fit: Arc<Mutex<AmFitnessStore>>,
+    pub shopping: Arc<Mutex<AmShoppingStore>>,
+    pub events: Events,
 }
 
 pub fn app(web: WebConfig, dev_user: Option<&str>) -> App {
     let todo = Arc::new(Mutex::new(AmTodoStore::new()));
     let fit = Arc::new(Mutex::new(AmFitnessStore::new()));
+    let shopping = Arc::new(Mutex::new(AmShoppingStore::new()));
+    let events = Events::new();
     let saves = Arc::new(AtomicUsize::new(0));
     let s = saves.clone();
     let state = AppState::new(
         todo.clone(),
         fit.clone(),
+        shopping.clone(),
+        events.clone(),
         Arc::new(move |_| {
             s.fetch_add(1, Ordering::SeqCst);
             Ok(())
@@ -47,7 +54,7 @@ pub fn app(web: WebConfig, dev_user: Option<&str>) -> App {
     .unwrap()
     // 2026-10-11 14:30 UTC = 2026-10-12 01:30 in Sydney (AEDT, +11).
     .with_clock(|| "2026-10-11T14:30:00Z".parse().unwrap());
-    App { router: web::router(state), saves, todo, fit }
+    App { router: web::router(state), saves, todo, fit, shopping, events }
 }
 
 pub fn dev() -> App {

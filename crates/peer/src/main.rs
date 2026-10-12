@@ -12,17 +12,16 @@
 //! The data dir is the directory containing the config file (default `./config.toml`).
 
 use fitness_core::{AmFitnessStore, FitnessStore};
+use peer_app::{doc_path, kind_label, on_remote_change, poll_disk, sync_kind, Res, Saver};
+use shopping_core::AmShoppingStore;
 use std::{
     collections::BTreeMap,
-    error::Error,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::{Duration, SystemTime},
+    time::Duration,
 };
-use sync::{config::Config, persist, Doc, SyncNode, FITNESS, TODO};
+use sync::{config::Config, persist, Doc, SyncNode, FITNESS, SHOPPING, TODO};
 use todo_core::{AmTodoStore, TodoStore};
-
-type Res<T> = Result<T, Box<dyn Error>>;
 
 const USAGE: &str = "usage:
   peer run [--config <path>]
@@ -32,10 +31,6 @@ const USAGE: &str = "usage:
   peer fitness sessions [--config <path>]
   peer fitness migrate-v1 [--config <path>]
   peer fitness recommend --workout <id> [--program <id>] [--user <id>] [--date YYYY-MM-DD] [--config <path>]";
-
-fn doc_path(dir: &Path, kind: u8) -> PathBuf {
-    dir.join(if kind == TODO { "todo.automerge" } else { "fitness.automerge" })
-}
 
 /// Pull `--name value` out of `args`.
 fn take_opt(args: &mut Vec<String>, name: &str) -> Res<Option<String>> {
@@ -167,34 +162,6 @@ fn print_todos(s: &AmTodoStore) -> Res<()> {
     Ok(())
 }
 
-fn mtime(p: &Path) -> Option<SystemTime> {
-    std::fs::metadata(p).and_then(|m| m.modified()).ok()
-}
-
-/// Writes docs to disk and remembers each file's mtime, so the poll below only
-/// re-merges files someone else (e.g. `peer todo add`) changed.
-struct Saver {
-    dir: PathBuf,
-    docs: BTreeMap<u8, Doc>,
-    seen: Mutex<BTreeMap<u8, Option<SystemTime>>>,
-}
-
-impl Saver {
-    /// Returns whether the file on disk had changes the in-memory doc lacked.
-    fn save(&self, kind: u8) -> Res<bool> {
-        let path = doc_path(&self.dir, kind);
-        let mut d = self.docs[&kind].lock().map_err(|_| "doc mutex poisoned")?;
-        let merged = persist::save(&path, d.as_mut())?;
-        self.seen.lock().map_err(|_| "poisoned")?.insert(kind, mtime(&path));
-        Ok(merged)
-    }
-
-    fn changed_on_disk(&self, kind: u8) -> bool {
-        let seen = self.seen.lock().map(|s| s.get(&kind).copied().flatten()).unwrap_or(None);
-        mtime(&doc_path(&self.dir, kind)) != seen
-    }
-}
-
 #[derive(serde::Deserialize, Default)]
 struct WebSection {
     #[serde(default)]
@@ -209,17 +176,25 @@ async fn run(dir: &Path, serve: Option<Option<String>>) -> Res<()> {
     let device = sync::config::device_id(dir)?;
     let todo = Arc::new(Mutex::new(AmTodoStore::from_doc(persist::load(&doc_path(dir, TODO))?)?));
     let fit = Arc::new(Mutex::new(AmFitnessStore::from_doc(persist::load(&doc_path(dir, FITNESS))?)?));
-    let docs: BTreeMap<u8, Doc> = BTreeMap::from([(TODO, todo.clone() as Doc), (FITNESS, fit.clone() as Doc)]);
+    let shopping = Arc::new(Mutex::new(AmShoppingStore::from_doc(persist::load(&doc_path(dir, SHOPPING))?)?));
+    // Every doc lives in the data dir; `sync_shopping = false` keeps the shopping doc off the
+    // wire (v0 and v1 peers drop the connection on a doc kind they do not know).
+    let all_docs: BTreeMap<u8, Doc> = BTreeMap::from([(TODO, todo.clone() as Doc), (FITNESS, fit.clone() as Doc), (SHOPPING, shopping.clone() as Doc)]);
+    let mut sync_docs = all_docs.clone();
+    if !cfg.sync_shopping {
+        sync_docs.remove(&SHOPPING);
+    }
 
     let listener = sync::bind(cfg.listen_ip, cfg.listen_port).await?;
-    println!("{} ({device}) sync listening on {}, peers {:?}", cfg.device_name, listener.local_addr()?, cfg.peers);
-    let (node, mut remote) = SyncNode::new(docs.clone(), cfg.peers.clone(), sync::POLL);
+    println!("{} ({device}) sync listening on {}, peers {:?}{}", cfg.device_name, listener.local_addr()?, cfg.peers, if cfg.sync_shopping { "" } else { ", shopping not synced" });
+    let (node, mut remote) = SyncNode::new(sync_docs, cfg.peers.clone(), sync::POLL);
     let mut net = tokio::spawn(node.clone().run(listener));
 
-    let saver = Arc::new(Saver { dir: dir.to_path_buf(), docs, seen: Mutex::new(BTreeMap::new()) });
-    for kind in [TODO, FITNESS] {
+    let saver = Arc::new(Saver::new(dir.to_path_buf(), all_docs));
+    for kind in saver.kinds() {
         saver.save(kind)?;
     }
+    let events = web::Events::new();
 
     let mut http = match serve {
         None => tokio::spawn(std::future::pending()),
@@ -229,35 +204,30 @@ async fn run(dir: &Path, serve: Option<Option<String>>) -> Res<()> {
             let (s, n) = (saver.clone(), node.clone());
             // ponytail: blocking file write inside the request; move to spawn_blocking if saves get slow.
             let saved: web::SavedHook = Arc::new(move |kind| {
-                let kind = if kind == web::DocKind::Todo { TODO } else { FITNESS };
-                s.save(kind).map_err(|e| e.to_string())?;
+                s.save(sync_kind(kind)).map_err(|e| e.to_string())?;
                 n.local_change();
                 Ok(())
             });
-            let state = web::AppState::new(todo.clone(), fit.clone(), saved, web_cfg.clone(), &cfg.user_id, dev_user.clone())?;
+            let state = web::AppState::new(todo.clone(), fit.clone(), shopping.clone(), events.clone(), saved, web_cfg.clone(), &cfg.user_id, dev_user.clone())?;
             let http_listener = tokio::net::TcpListener::bind(web_cfg.listen).await?;
             println!("http on http://{}{}", http_listener.local_addr()?, dev_user.map(|u| format!(" (dev user {u})")).unwrap_or_default());
             tokio::spawn(async move { axum::serve(http_listener, web::router(state)).await })
         }
     };
 
-    // Persist after remote changes; pick up edits made by `peer todo add` etc.
-    // ponytail: polls file mtimes every second; a file watcher if this ever matters.
+    // Persist after remote changes (and tell open browsers); pick up edits made by `peer todo add` etc.
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     loop {
         tokio::select! {
             r = &mut net => return Err(format!("sync stopped: {:?}", r?).into()),
             r = &mut http => return Err(format!("http stopped: {:?}", r?).into()),
             Some(kind) = remote.recv() => {
-                saver.save(kind)?;
-                println!("synced {} from a peer", if kind == TODO { "todos" } else { "fitness" });
+                on_remote_change(&saver, &events, kind)?;
+                println!("synced {} from a peer", kind_label(kind));
             }
             _ = tick.tick() => {
-                for kind in [TODO, FITNESS] {
-                    if saver.changed_on_disk(kind) && saver.save(kind)? {
-                        println!("picked up local edit to {}", if kind == TODO { "todos" } else { "fitness" });
-                        node.local_change();
-                    }
+                for kind in poll_disk(&saver, &events, &node)? {
+                    println!("picked up local edit to {}", kind_label(kind));
                 }
             }
         }

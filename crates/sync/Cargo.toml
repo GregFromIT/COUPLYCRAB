@@ -13,3 +13,4 @@ uuid.workspace = true
 [dev-dependencies]
 todo-core = { path = "../todo-core" }
 fitness-core = { path = "../fitness-core" }
+shopping-core = { path = "../shopping-core" }

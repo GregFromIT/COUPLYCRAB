@@ -33,6 +33,9 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// Doc kinds on the wire.
 pub const TODO: u8 = 1;
 pub const FITNESS: u8 = 2;
+/// v2. v0 and v1 peers reject frames of a kind they do not know and drop the connection,
+/// so a host that syncs with them must not send this one (`sync_shopping = false`).
+pub const SHOPPING: u8 = 3;
 
 /// A doc shared between the app and the sync loop. Stores implement `AsMut<Automerge>`.
 pub type Doc = Arc<Mutex<dyn AsMut<Automerge> + Send>>;

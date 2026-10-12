@@ -261,6 +261,8 @@ fn config_must_be_loopback_and_timezone_valid() {
         AppState::new(
             Arc::new(Mutex::new(AmTodoStore::new())),
             Arc::new(Mutex::new(AmFitnessStore::new())),
+            Arc::new(Mutex::new(shopping_core::AmShoppingStore::new())),
+            web::Events::new(),
             Arc::new(|_| Ok(())),
             web,
             "alice",

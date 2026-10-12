@@ -25,3 +25,7 @@ Nothing here was done by the build run: it changes Tailscale config or another m
 ## Android SDK / NDK not installed (v0 M6; not needed for v1)
 
 `ANDROID_HOME` and `NDK_HOME` unset, no SDK under `%LOCALAPPDATA%\Android\Sdk`, no Rust Android targets. v0 M6 was not attempted. v1's web app replaces the Android build, so this only matters if you want the native v0 app on a phone. Steps are in `docs/ANDROID.md`. Needs ~10 GB free disk.
+
+## v0/v1 peers and a v2 host (v2-M4)
+
+v2 adds a third synced document (shopping, wire kind 3). v0 and v1 builds close the connection when they receive a kind they do not know, which breaks sync of *all* documents with them. If a v0 desktop app or a v1 host is listed in `peers`, set `sync_shopping = false` in the v2 host's `config.toml`. Not tested against a real v0/v1 build (the old behaviour is read from the code, `crates/sync/src/lib.rs` at tag `v1`). Phones and laptops using the web app are unaffected.

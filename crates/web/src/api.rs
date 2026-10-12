@@ -31,6 +31,7 @@ pub fn routes() -> Router<AppState> {
         .route("/todos/{id}/complete", post(complete_todo))
         .route("/todos/{id}/uncomplete", post(uncomplete_todo))
         .merge(crate::training::routes())
+        .merge(crate::shopping::routes())
         .route("/exercises", get(list_exercises))
         .route("/exercises/{id}", put(put_exercise).patch(patch_exercise))
         .route("/templates", get(list_templates))
@@ -62,7 +63,21 @@ impl AppState {
     }
     pub(crate) fn write_todo<T>(&self, f: impl FnOnce(&mut dyn TodoStore) -> todo_core::Result<T>) -> ApiResult<T> {
         let out = f(&mut *lock(&self.0.todo)?)?;
-        (self.0.saved)(DocKind::Todo).map_err(ApiError::internal)?;
+        self.saved(DocKind::Todo)?;
+        Ok(out)
+    }
+    /// Persist (and trigger sync), then tell open browsers the doc moved.
+    fn saved(&self, kind: DocKind) -> ApiResult<()> {
+        (self.0.saved)(kind).map_err(ApiError::internal)?;
+        self.0.events.notify(kind);
+        Ok(())
+    }
+    pub(crate) fn read_shopping<T>(&self, f: impl FnOnce(&dyn shopping_core::ShoppingStore) -> shopping_core::Result<T>) -> ApiResult<T> {
+        Ok(f(&*lock(&self.0.shopping)?)?)
+    }
+    pub(crate) fn write_shopping<T>(&self, f: impl FnOnce(&mut dyn shopping_core::ShoppingStore) -> shopping_core::Result<T>) -> ApiResult<T> {
+        let out = f(&mut *lock(&self.0.shopping)?)?;
+        self.saved(DocKind::Shopping)?;
         Ok(out)
     }
     pub(crate) fn read_fit<T>(&self, f: impl FnOnce(&dyn FitnessStore) -> fitness_core::Result<T>) -> ApiResult<T> {
@@ -70,7 +85,7 @@ impl AppState {
     }
     pub(crate) fn write_fit<T>(&self, f: impl FnOnce(&mut dyn FitnessStore) -> fitness_core::Result<T>) -> ApiResult<T> {
         let out = f(&mut *lock(&self.0.fit)?)?;
-        (self.0.saved)(DocKind::Fitness).map_err(ApiError::internal)?;
+        self.saved(DocKind::Fitness)?;
         Ok(out)
     }
 }

@@ -40,7 +40,9 @@ The release build embeds `web/dist`, so build the frontend **before** `cargo bui
 
 ## Config
 
-One `config.toml` per host, in its data dir (the directory holding the file you pass to `--config`). Data files live next to it: `todo.automerge`, `fitness.automerge`, `device_id`.
+One `config.toml` per host, in its data dir (the directory holding the file you pass to `--config`). Data files live next to it: `todo.automerge`, `fitness.automerge`, `shopping.automerge`, `device_id`.
+
+**Syncing with v0 or v1 builds:** they drop the connection on a document kind they do not know, and v2 adds one (shopping). If any entry in `peers` is a v0 desktop app or a v1 host, set `sync_shopping = false` on the v2 host. Phones and laptops using the web app are not peers and are unaffected.
 
 ```toml
 # v0 sync (always on)
@@ -49,6 +51,7 @@ device_name = "home-host"
 listen_ip = "100.101.102.103"      # this host's Tailscale IPv4 (`tailscale ip -4`); never 0.0.0.0
 listen_port = 7420                 # optional, default 7420
 peers = []                         # v0 native peers (MagicDNS names, optional ":port"), if any
+sync_shopping = true               # v2 shopping doc on the wire; set false if a peer is a v0/v1 build (see below)
 
 # v1 web app (`peer serve`)
 [web]

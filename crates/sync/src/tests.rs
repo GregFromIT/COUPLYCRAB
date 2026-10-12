@@ -173,3 +173,44 @@ async fn frame_roundtrip_and_limit() {
     let big = vec![0u8; MAX_FRAME as usize + 1];
     assert!(write_frame(&mut Vec::new(), TODO, &big).await.is_err());
 }
+
+#[tokio::test]
+async fn shopping_doc_syncs_as_a_third_kind() {
+    use shopping_core::{AmShoppingStore, NewItem, ShoppingStore};
+    let ((la, aa), (lb, ab)) = (listener().await, listener().await);
+    let mk = || (Arc::new(Mutex::new(AmTodoStore::new())), Arc::new(Mutex::new(AmFitnessStore::new())), Arc::new(Mutex::new(AmShoppingStore::new())));
+    let ((ta, fa, sa), (tb, fb, sb)) = (mk(), mk());
+    let docs = |t: &Arc<Mutex<AmTodoStore>>, f: &Arc<Mutex<AmFitnessStore>>, s: &Arc<Mutex<AmShoppingStore>>| -> BTreeMap<u8, Doc> {
+        BTreeMap::from([(TODO, t.clone() as Doc), (FITNESS, f.clone() as Doc), (SHOPPING, s.clone() as Doc)])
+    };
+    sa.lock().unwrap().put_list("g", "Groceries").unwrap();
+    let (na, _rx) = SyncNode::new(docs(&ta, &fa, &sa), vec![ab], Duration::from_millis(200));
+    let (nb, _rx2) = SyncNode::new(docs(&tb, &fb, &sb), vec![aa], Duration::from_millis(200));
+    tokio::spawn(na.clone().run(la));
+    tokio::spawn(nb.clone().run(lb));
+    let item = |id: &str, name: &str| NewItem { id: id.into(), list_id: "g".into(), name: name.into(), quantity: None, note: None, category: None };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while sb.lock().unwrap().lists().unwrap().is_empty() && Instant::now() < deadline {
+        sleep(Duration::from_millis(50)).await;
+    }
+    sb.lock().unwrap().put_item("bob", item("m", "Milk")).unwrap();
+    nb.local_change();
+    sa.lock().unwrap().put_item("alice", item("e", "Eggs")).unwrap();
+    na.local_change();
+    let both = |s: &Arc<Mutex<AmShoppingStore>>| s.lock().unwrap().items("g").unwrap().len() == 2;
+    while !(both(&sa) && both(&sb)) && Instant::now() < deadline {
+        sleep(Duration::from_millis(50)).await;
+    }
+    assert!(both(&sa) && both(&sb), "both devices see both items");
+    // Concurrent ticks on the two devices end up as the same single tick everywhere.
+    sa.lock().unwrap().set_checked("alice", "m", true).unwrap();
+    sb.lock().unwrap().set_checked("bob", "m", true).unwrap();
+    na.local_change();
+    nb.local_change();
+    let same = || sa.lock().unwrap().get_item("m").unwrap() == sb.lock().unwrap().get_item("m").unwrap();
+    while !same() && Instant::now() < deadline {
+        sleep(Duration::from_millis(50)).await;
+    }
+    assert!(same());
+    assert!(sa.lock().unwrap().get_item("m").unwrap().checked());
+}

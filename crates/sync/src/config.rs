@@ -6,6 +6,7 @@
 //! listen_ip = "100.101.102.103"   # this device's Tailscale IPv4
 //! listen_port = 7420              # optional, default 7420
 //! peers = ["bob-phone", "alice-phone:7420"]  # MagicDNS names, optional :port
+//! sync_shopping = true            # optional; false when a peer is a v0/v1 build
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -20,6 +21,14 @@ pub struct Config {
     pub listen_port: u16,
     #[serde(default)]
     pub peers: Vec<String>,
+    /// Sync the shopping doc (v2) with peers. Set `false` when a peer is a v0 or v1 build:
+    /// they close the connection on a doc kind they do not know.
+    #[serde(default = "yes")]
+    pub sync_shopping: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 fn default_port() -> u16 {
@@ -68,7 +77,12 @@ mod tests {
     #[test]
     fn roundtrip_and_defaults() {
         let c: Config = toml::from_str("user_id='a'\ndevice_name='d'\nlisten_ip='100.64.0.1'").unwrap();
-        assert_eq!((c.listen_port, c.peers.len()), (7420, 0));
+        assert_eq!((c.listen_port, c.peers.len(), c.sync_shopping), (7420, 0, true));
+        let old: Config = toml::from_str("user_id='a'
+device_name='d'
+listen_ip='100.64.0.1'
+sync_shopping=false").unwrap();
+        assert!(!old.sync_shopping);
         let dir = std::env::temp_dir().join(format!("household-cfg-{}", uuid::Uuid::new_v4()));
         assert_eq!(Config::load(&dir).unwrap(), None);
         c.save(&dir).unwrap();
