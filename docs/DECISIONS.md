@@ -101,3 +101,13 @@ Not built (PLAN says minimal); listed so they aren't forgotten.
 - **Upgrade Node and Vite** (BLOCKERS.md).
 - **Automated UI smoke test.** The M5 check was done by hand over CDP; a WebDriver test (https://v2.tauri.app/develop/tests/webdriver/) could make it repeatable.
 - **Application-level peer auth** (pre-shared key in config) if the tailnet ever has devices you don't fully trust.
+
+---
+
+# v1 (web app + data API, `PLAN-v1.md`)
+
+## Baseline (v1-M0, 2026-10-12)
+
+- Tagged `v0` at `629b113` before any v1 change. `cargo test --workspace` passed (22 tests).
+- Carried forward from v0's BLOCKERS.md: Node 16 is EOL (frontend stays on Vite 4.5.14), Android SDK not installed (irrelevant for v1: the web app replaces the Android build).
+- `crates/fitness-core/tests/fixtures/fitness-v0.automerge` was produced by the v0 `fitness-core` code (unchanged since tag `v0`) with a throwaway example program: one exercise, a template, a finished session with one set, one beep test. It's the input of the "v0 doc loads in v1" test. `.gitignore` has an exception for `tests/fixtures/*.automerge`.
