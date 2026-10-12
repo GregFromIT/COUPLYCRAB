@@ -73,6 +73,8 @@ pub struct Program {
     pub start_date: String,
     pub weeks: u32,
     pub gym_profile_id: Option<String>,
+    /// Suggest warm-up sets for the first exercise per primary muscle.
+    pub warmups: bool,
     pub workouts: HashMap<String, ProgramWorkout>,
     /// Keyed `"{week}:{item_id}"`.
     pub overrides: HashMap<String, WeekOverride>,

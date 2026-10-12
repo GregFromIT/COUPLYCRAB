@@ -143,6 +143,7 @@ fn program(ex: &str) -> Program {
         start_date: "2026-01-05".into(),
         weeks: 4,
         gym_profile_id: None,
+        warmups: true,
         workouts: [("w1".to_string(), w)].into_iter().collect(),
         overrides: Default::default(),
         migrated_from: None,

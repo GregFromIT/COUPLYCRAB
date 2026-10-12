@@ -252,3 +252,9 @@ pub fn router(state: AppState) -> Router {
         .fallback(assets::serve)
         .with_state(state)
 }
+
+/// Today's date in the IANA zone `tz` (e.g. `Australia/Sydney`), for the CLI.
+pub fn today_in(tz: &str) -> Result<chrono::NaiveDate, String> {
+    let tz: chrono_tz::Tz = tz.parse().map_err(|_| format!("unknown timezone {tz:?}"))?;
+    Ok(Utc::now().with_timezone(&tz).date_naive())
+}

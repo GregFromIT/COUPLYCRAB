@@ -97,6 +97,7 @@ pub(crate) fn v1_to_programs(
                 start_date: b.start_date.clone(),
                 weeks: b.weeks,
                 gym_profile_id: None,
+                warmups: true,
                 workouts,
                 overrides,
                 migrated_from: Some(b.id.clone()),

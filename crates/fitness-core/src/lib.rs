@@ -71,9 +71,16 @@ string_enum!(SessionStatus { InProgress, Completed, Partial });
 string_enum!(TestKind { BeepTest, OneRepMax, MaxReps, TimedRun });
 string_enum!(ProgressionKind { LinearLoad, LinearReps });
 
+mod analytics;
 mod migrate;
+mod progression;
 mod program;
+pub use analytics::{e1rm_series, prs, week_start, weekly_volume, E1rmPoint, Pr};
 pub use migrate::Migration;
+pub use progression::{
+    default_gym, epley, load_for, prescription, program_week, recommend, round_down_load, warmups, ItemPlan, Prescription, Recommendation, WarmupSet,
+    WorkoutPlan, ASSUMED_RIR,
+};
 pub use program::{Equipment, GymProfile, Program, ProgramItem, ProgramWorkout, SetKind, SetStyle, WeekOverride, MUSCLES};
 
 /// Shuttles per level, levels 1..=21, of the common 20 m beep test (level 1 at
@@ -489,6 +496,36 @@ pub trait FitnessStore {
     /// Turns each v1 block (with its owner's plan and templates) into a Program
     /// with ID `v1-<block id>`. Idempotent; an existing program is never overwritten.
     fn migrate_v1_blocks(&mut self) -> Result<Migration>;
+
+    /// The user's program whose mesocycle contains `date`, and the week number (the latest start wins).
+    fn active_program(&self, user_id: &str, date: NaiveDate) -> Result<Option<(Program, u32)>> {
+        Ok(self
+            .list_programs()?
+            .into_iter()
+            .filter(|p| p.user_id == user_id)
+            .filter_map(|p| program_week(&p, date).map(|w| (p, w)))
+            .max_by(|(a, _), (b, _)| (&a.start_date, &a.id).cmp(&(&b.start_date, &b.id))))
+    }
+
+    /// The gym profile a program uses: its own, else the user's default, else [`default_gym`].
+    fn gym_for(&self, program: &Program) -> Result<GymProfile> {
+        if let Some(g) = program.gym_profile_id.as_deref().and_then(|id| self.get_gym_profile(id).ok()).filter(|g| !g.deleted) {
+            return Ok(g);
+        }
+        Ok(self.list_gym_profiles(&program.user_id)?.into_iter().next().unwrap_or_else(|| default_gym(&program.user_id)))
+    }
+
+    /// One workout with prescriptions for `date`'s week, recommendations (each with its
+    /// reason) and warm-ups. Derived from the session log; nothing is stored.
+    fn plan_workout(&self, user_id: &str, program_id: &str, workout_id: &str, date: NaiveDate) -> Result<WorkoutPlan> {
+        let program = self.get_program(program_id)?;
+        if program.user_id != user_id {
+            return Err(Error::NotOwner);
+        }
+        let workout = program.workouts.get(workout_id).ok_or_else(|| Error::NotFound(workout_id.into()))?;
+        let exercises: HashMap<String, Exercise> = self.list_exercises()?.into_iter().map(|e| (e.id.clone(), e)).collect();
+        Ok(progression::plan_workout(&program, workout, date, &exercises, &self.list_sessions()?, &self.gym_for(&program)?))
+    }
 
     // ---- v0 conveniences: the store generates the ID ----
 
@@ -981,6 +1018,10 @@ impl FitnessStore for AmFitnessStore {
             let from = p.migrated_from.clone();
             self.put_program(p).map_err(|e| Error::Invalid(format!("migrating block {from:?}: {e}")))?;
             created += 1;
+        }
+        // Notes describe what this call dropped; a re-run that created nothing dropped nothing.
+        if created == 0 {
+            notes.clear();
         }
         notes.sort();
         notes.dedup();

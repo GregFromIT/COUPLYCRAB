@@ -69,9 +69,15 @@ pub(crate) fn active_block(blocks: &[Block], date: NaiveDate) -> Option<(&Block,
 
 /// Week number of `date` in `block`, or `None` if outside it.
 pub(crate) fn week_of(block: &Block, date: NaiveDate) -> Option<u32> {
-    let start = NaiveDate::parse_from_str(&block.start_date, "%Y-%m-%d").ok()?;
+    week_index(&block.start_date, block.weeks, date)
+}
+
+/// 1-based week of `date` in a run of `weeks` weeks starting `start_date`, or `None` outside it.
+/// Shared by v1 blocks and v2 programs.
+pub(crate) fn week_index(start_date: &str, weeks: u32, date: NaiveDate) -> Option<u32> {
+    let start = NaiveDate::parse_from_str(start_date, "%Y-%m-%d").ok()?;
     let days = (date - start).num_days();
-    if days < 0 || days >= i64::from(block.weeks) * 7 {
+    if days < 0 || days >= i64::from(weeks) * 7 {
         return None;
     }
     Some((days / 7) as u32 + 1)

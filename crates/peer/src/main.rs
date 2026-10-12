@@ -6,6 +6,8 @@
 //! peer todo add "<title>" [--due YYYY-MM-DD] [--config <path>]
 //! peer todo list [--config <path>]
 //! peer fitness sessions [--config <path>]
+//! peer fitness migrate-v1 [--config <path>]
+//! peer fitness recommend --workout <id> [--program <id>] [--user <id>] [--date YYYY-MM-DD] [--config <path>]
 //! ```
 //! The data dir is the directory containing the config file (default `./config.toml`).
 
@@ -27,7 +29,9 @@ const USAGE: &str = "usage:
   peer serve [--config <path>] [--dev-user <user_id>]
   peer todo add \"<title>\" [--due YYYY-MM-DD] [--config <path>]
   peer todo list [--config <path>]
-  peer fitness sessions [--config <path>]";
+  peer fitness sessions [--config <path>]
+  peer fitness migrate-v1 [--config <path>]
+  peer fitness recommend --workout <id> [--program <id>] [--user <id>] [--date YYYY-MM-DD] [--config <path>]";
 
 fn doc_path(dir: &Path, kind: u8) -> PathBuf {
     dir.join(if kind == TODO { "todo.automerge" } else { "fitness.automerge" })
@@ -65,6 +69,12 @@ fn real_main() -> Res<()> {
     }
     let due = take_opt(&mut args, "--due")?;
     let dev_user = take_opt(&mut args, "--dev-user")?;
+    let (workout, program, user, date) = (
+        take_opt(&mut args, "--workout")?,
+        take_opt(&mut args, "--program")?,
+        take_opt(&mut args, "--user")?,
+        take_opt(&mut args, "--date")?,
+    );
     let a: Vec<&str> = args.iter().map(String::as_str).collect();
     match a.as_slice() {
         ["run"] => run(&dir, None),
@@ -86,7 +96,66 @@ fn real_main() -> Res<()> {
             }
             Ok(())
         }
+        ["fitness", "migrate-v1"] => {
+            let mut s = AmFitnessStore::from_doc(persist::load(&doc_path(&dir, FITNESS))?)?;
+            let m = s.migrate_v1_blocks()?;
+            persist::save(&doc_path(&dir, FITNESS), &mut s.doc)?;
+            println!("migrated {} v1 block(s) into programs", m.created);
+            for n in m.notes {
+                println!("  note: {n}");
+            }
+            Ok(())
+        }
+        ["fitness", "recommend"] => {
+            let cfg = Config::load(&dir)?.ok_or_else(|| format!("no {} in {}", sync::config::FILE, dir.display()))?;
+            let user = user.unwrap_or(cfg.user_id);
+            let text = std::fs::read_to_string(dir.join(sync::config::FILE))?;
+            let tz = toml::from_str::<WebSection>(&text).map_err(|e| format!("[web]: {e}"))?.web.timezone;
+            let date = match date {
+                Some(d) => chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d").map_err(|_| format!("--date {d:?}, expected YYYY-MM-DD"))?,
+                None => web::today_in(&tz)?,
+            };
+            let s = AmFitnessStore::from_doc(persist::load(&doc_path(&dir, FITNESS))?)?;
+            let program = match program {
+                Some(p) => p,
+                None => s.active_program(&user, date)?.map(|(p, _)| p.id).ok_or_else(|| format!("{user} has no program running on {date}; pass --program <id>"))?,
+            };
+            let workout = workout.ok_or("--workout <id> is required")?;
+            let plan = s.plan_workout(&user, &program, &workout, date).map_err(|e| match e {
+                fitness_core::Error::NotFound(_) => {
+                    let ids = s.get_program(&program).map(|p| p.ordered_workouts().iter().map(|w| format!("{} ({})", w.id, w.name)).collect::<Vec<_>>().join(", "));
+                    format!("workout {workout:?} not found in program {program}; its workouts: {}", ids.unwrap_or_default())
+                }
+                e => e.to_string(),
+            })?;
+            print_plan(&plan, date);
+            Ok(())
+        }
         _ => Err(USAGE.into()),
+    }
+}
+
+fn print_plan(p: &fitness_core::WorkoutPlan, date: chrono::NaiveDate) {
+    let week = p.week.map_or("outside the program".to_string(), |w| format!("week {w}"));
+    println!("{} · {date} · {week}", p.name);
+    if let Some(l) = &p.external_label {
+        println!("  external session: {l}");
+    }
+    for it in &p.items {
+        let x = &it.prescription;
+        let name = it.exercise_name.as_deref().unwrap_or(&it.exercise_id);
+        let rest = x.rest_s.map(|r| format!(", rest {r}s")).unwrap_or_default();
+        println!("{name}: {} sets × {}–{} reps @ {} RIR{rest}", x.sets, x.rep_min, x.rep_max, x.rir);
+        for w in &it.warmups {
+            println!("    warm-up: {} kg × {}", w.load_kg, w.reps);
+        }
+        match &it.recommendation {
+            Some(r) => {
+                println!("    → {} kg × {} @ {} RIR", r.load_kg, r.reps, r.rir);
+                println!("      {}", r.reason);
+            }
+            None => println!("    no history yet: pick a load"),
+        }
     }
 }
 
