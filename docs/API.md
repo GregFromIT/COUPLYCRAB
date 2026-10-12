@@ -6,7 +6,7 @@ Every example below is a real request against `peer serve --dev-user alice` (`ti
 
 ## Conventions
 
-**Read-only endpoints** (safe for an assistant to call freely): every `GET`. That's `/health`, `/me`, `/todos`, `/exercises`, `/sessions`, `/sessions/{id}`, `/tests`, and in v2 `/gym-profiles`, `/programs`, `/programs/{id}`, `/workouts/next`, `/recommendations`, `/analytics/volume`, `/analytics/e1rm`, `/prs`, and the shopping endpoints `/lists`, `/lists/{id}/items`, `/lists/{id}/suggestions` and the `/events` stream (plus the v1 `/templates`, `/templates/{id}`, `/plan`, `/blocks`, `/planned-day`, `/program-status` until they are retired; see below). Recommendations and analytics are computed from your logs on every read: nothing is stored, and asking changes nothing.
+**Read-only endpoints** (safe for an assistant to call freely): every `GET`. That's `/health`, `/me`, `/todos`, `/exercises`, `/sessions`, `/sessions/{id}`, `/tests`, and in v2 `/gym-profiles`, `/programs`, `/programs/{id}`, `/workouts/next`, `/recommendations`, `/analytics/volume`, `/analytics/e1rm`, `/prs`, `/assistant/status`, and the shopping endpoints `/lists`, `/lists/{id}/items`, `/lists/{id}/suggestions` and the `/events` stream (plus the v1 `/templates`, `/templates/{id}`, `/plan`, `/blocks`, `/planned-day`, `/program-status` until they are retired; see below). Recommendations and analytics are computed from your logs on every read: nothing is stored, and asking changes nothing.
 
 **Identity.** The current user comes from `--dev-user`, else the `Tailscale-User-Login` header that `tailscale serve` adds (mapped through `[web.users]` in `config.toml`), else the picker cookie (`PUT /me`). Without one, every endpoint except `/health` and `/me` returns `401 no_user`. See `docs/LEARNING.md` v1.3.
 
@@ -3052,3 +3052,208 @@ data: {"doc":"todo","version":1}          <- PUT /todos/t1
 
 : keep-alive
 ```
+
+---
+
+## Assistant (v2)
+
+A **read-only** chat assistant over your training, todos and shopping list, driven by a local model (Ollama). It runs inside `peer serve`, so it inherits identity, the JSON-only write rule and the `Origin` check from every other endpoint. Its seven tools (`get_next_workout`, `get_exercise_history`, `get_weekly_volume`, `get_prs`, `get_test_history`, `get_todos`, `get_shopping_list`) call the same store functions as the `GET` endpoints above, and none of them can change anything (`docs/DECISIONS.md` "Assistant core (v2-M6)"). Training tools see only the asking user's data; todos and shopping lists are shared.
+
+Turn it on with an `[assistant]` section in `config.toml`:
+
+```toml
+[assistant]
+url = "http://127.0.0.1:11434"   # plain http; Ollama has no TLS or login (bind it to localhost or the tailnet IP)
+model = "qwen3:8b"
+```
+
+or try the screen without a model: `peer serve --fake-llm` uses a built-in keyword demo (it matches words like "workout" or "shopping", calls the tool, and reads the result back in a sentence; it is not a language model). The examples below were captured that way, so the *answers* are the demo's; the request and response shapes are the real ones.
+
+The conversation is kept by the browser and sent with each question; the server stores nothing. Rules per question: at most 5 model calls and 60 s in total; each tool result is cut to 8 KB (`"truncated": true` appears in it); the last 12 turns of `history` are used, each cut to 4000 characters.
+
+
+### GET /assistant/status
+
+**Read-only.**
+
+Whether the assistant is configured, which model, and whether it is the keyword demo.
+
+```sh
+curl -s 'http://127.0.0.1:7430/api/v1/assistant/status'
+```
+
+`200`
+
+```json
+{
+  "configured": true,
+  "model": "demo",
+  "fake": true
+}
+```
+
+
+### POST /assistant/chat
+
+Ask a question. Body: `message` (required, at most 2000 characters) and `history` (optional, earlier turns as `{role: "user" | "assistant", content}`, at most 40). The response is the answer plus **every tool that ran**, with its arguments and what it returned, so a client can show where the answer came from. `hit_iteration_cap` is true if the model was still asking for tools at the fifth call (then `answer` is its last text or a fixed sentence).
+
+It is a POST but changes nothing in your data.
+
+```sh
+curl -s -X POST http://127.0.0.1:7430/api/v1/assistant/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"message": "What's the workout today?"}'
+```
+
+`200`
+
+```json
+{
+  "answer": "Upper A (week 1). Bench Press: 82.5 kg × 8 (Last session: 10 reps @ 80 kg at 2 RIR, above the 7–9 @ 2 RIR target by 2 rep(s) to failure → +2.5 kg) Incline DB Press: 30 kg × 10 (Last session: 10 reps @ 30 kg at 2 RIR, on the 8–12 @ 2 RIR target → same load) Cable Row: 55 kg × 10 (Last session: 10 reps @ 55 kg at 2 RIR, on the 8–12 @ 2 RIR target → same load)",
+  "tools": [
+    {
+      "name": "get_next_workout",
+      "arguments": {},
+      "result": {
+        "date": "2026-10-12",
+        "externals": [],
+        "program_id": "p1",
+        "program_name": "Upper/Lower",
+        "reason": "Pinned for Monday AM.",
+        "todays_sessions": [],
+        "week": 1,
+        "weeks": 4,
+        "workout": {
+          "external_label": null,
+          "items": [
+            {
+              "exercise_id": "bench",
+              "exercise_name": "Bench Press",
+              "item_id": "i1",
+              "prescription": {
+                "rep_max": 9,
+                "rep_min": 7,
+                "rest_s": 150,
+                "rir": 2,
+                "sets": 3,
+                "style": "Straight"
+              },
+              "recommendation": {
+                "id": "bench@82.5x8@2",
+                "load_kg": 82.5,
+                "reason": "Last session: 10 reps @ 80 kg at 2 RIR, above the 7–9 @ 2 RIR target by 2 rep(s) to failure → +2.5 kg",
+                "reps": 8,
+                "rir": 2
+              },
+              "warmups": [
+                {
+                  "load_kg": 32.5,
+                  "reps": 8
+                },
+                {
+                  "load_kg": 47.5,
+                  "reps": 5
+                },
+                "…"
+              ]
+            },
+            {
+              "exercise_id": "incline",
+              "exercise_name": "Incline DB Press",
+              "item_id": "i2",
+              "prescription": {
+                "rep_max": 12,
+                "rep_min": 8,
+                "rest_s": 90,
+                "rir": 2,
+                "sets": 3,
+                "style": "Straight"
+              },
+              "recommendation": {
+                "id": "incline@30x10@2",
+                "load_kg": 30.0,
+                "reason": "Last session: 10 reps @ 30 kg at 2 RIR, on the 8–12 @ 2 RIR target → same load",
+                "reps": 10,
+                "rir": 2
+              },
+              "warmups": []
+            },
+            "…"
+          ],
+          "name": "Upper A",
+          "program_id": "p1",
+          "slot": "mon_am",
+          "week": 1,
+          "workout_id": "w1"
+        }
+      },
+      "error": false
+    }
+  ],
+  "iterations": 2,
+  "hit_iteration_cap": false
+}
+```
+
+```sh
+curl -s -X POST http://127.0.0.1:7430/api/v1/assistant/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"message": "And what's overdue?", "history": [{"role": "user", "content": "What's the workout today?"}, {"role": "assistant", "content": "Upper A (week 1)."}]}'
+```
+
+`200` (with history)
+
+```json
+{
+  "answer": "1 todo(s): Call the plumber (due 2026-10-01).",
+  "tools": [
+    {
+      "name": "get_todos",
+      "arguments": {
+        "filter": "overdue"
+      },
+      "result": {
+        "today": "2026-10-12",
+        "todos": [
+          {
+            "completed": false,
+            "due": "2026-10-01",
+            "notes": "",
+            "title": "Call the plumber"
+          }
+        ]
+      },
+      "error": false
+    }
+  ],
+  "iterations": 2,
+  "hit_iteration_cap": false
+}
+```
+
+```sh
+curl -s -X POST http://127.0.0.1:7430/api/v1/assistant/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"message": "   "}'
+```
+
+`400` (empty message)
+
+```json
+{
+  "error": {
+    "code": "invalid",
+    "message": "message is required"
+  }
+}
+```
+
+
+| Status | `code` | When |
+|---|---|---|
+| 503 | `assistant_not_configured` | No `[assistant]` section and no `--fake-llm` (the message says how to set it up) |
+| 503 | `assistant_offline` | The model host cannot be reached (Ollama not running, wrong URL) |
+| 504 | `assistant_timeout` | No answer within 60 s |
+| 502 | `assistant_error` | The host answered with an error (e.g. the model was never pulled) or an unusable body |
+| 429 | `assistant_busy` | Two chats are already running; try again in a moment |
+| 400 | `invalid`, `bad_json` | Empty or over-long message, too much history |

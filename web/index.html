@@ -65,6 +65,14 @@
       button.tick { min-width: 64px; min-height: 64px; font-size: 30px; line-height: 1; padding: 0; }
       .item-row.ticked button.tick { color: var(--ok); border-color: var(--ok); }
       h3.cat { margin: 14px 0 2px; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+      .who { margin-left: auto; white-space: nowrap; align-self: center; }
+      .chat { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; margin: 8px 0; }
+      .bubble { padding: 10px 12px; border-radius: 14px; max-width: 94%; white-space: pre-wrap; overflow-wrap: anywhere; }
+      .bubble.user { align-self: flex-end; background: var(--accent); color: #fff; }
+      .bubble.assistant { border: 1px solid var(--line); }
+      .tools { margin-top: 6px; white-space: normal; }
+      .tool { margin: 6px 0; font-size: 13px; }
+      pre.json { max-height: 220px; overflow: auto; font-size: 12px; margin: 4px 0; padding: 8px; border: 1px solid var(--line); border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
       #rest { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; display: flex; gap: 8px; align-items: center; padding: 10px 16px; background: var(--bg); border-top: 3px solid var(--accent); font-size: 18px; font-variant-numeric: tabular-nums; }
       #rest[hidden] { display: none; }
       #rest.over { border-top-color: var(--ok); color: var(--ok); }

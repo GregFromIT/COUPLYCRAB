@@ -2438,6 +2438,7 @@ dependencies = [
 name = "peer"
 version = "0.1.0"
 dependencies = [
+ "assistant-core",
  "axum",
  "chrono",
  "fitness-core",
@@ -4268,6 +4269,7 @@ dependencies = [
 name = "web"
 version = "0.1.0"
 dependencies = [
+ "assistant-core",
  "axum",
  "chrono",
  "chrono-tz",

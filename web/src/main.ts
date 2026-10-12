@@ -9,6 +9,7 @@ import { progressScreen } from "./progress";
 import { logScreen, todayScreen } from "./train";
 import { leaveShopping, shoppingScreen } from "./shopping";
 import { ensureLive, showLiveStatus } from "./live";
+import { assistantScreen } from "./assistant";
 
 // ---- shell ----
 async function render() {
@@ -18,14 +19,14 @@ async function render() {
     ui.me = await api.me();
     if (!ui.me.user_id) body = picker();
     else {
-      const screen = ui.area === "todos" ? await todosScreen() : ui.area === "shopping" ? await shoppingScreen() : await fitnessScreen();
+      const screen = ui.area === "todos" ? await todosScreen() : ui.area === "shopping" ? await shoppingScreen() : ui.area === "assistant" ? await assistantScreen() : await fitnessScreen();
       if (ui.area !== "shopping") leaveShopping();
       const tab = (area: Area, label: string) =>
         h("button", { class: ui.area === area ? "active" : "", onclick: () => { ui.area = area; render(); } }, label);
       const fitTabs: [Fit, string][] = [["today", "Today"], ["log", "Log"], ["programs", "Programs"], ["progress", "Progress"], ["exercises", "Exercises"]];
       body = h("div", {},
-        h("nav", {}, tab("fitness", "Fitness"), tab("shopping", "Shopping"), tab("todos", "Todos"),
-          h("span", { class: "muted grow", style: "text-align:right" }, ui.me.user_id,
+        h("nav", {}, tab("fitness", "Fitness"), tab("shopping", "Shopping"), tab("todos", "Todos"), tab("assistant", "Assistant"),
+          h("span", { class: "muted who" }, ui.me.user_id,
             ui.me.users.length > 1 ? " · " : "",
             ui.me.users.length > 1 ? h("a", { href: "#", onclick: (e: Event) => { e.preventDefault(); ui.me.user_id = null; app.replaceChildren(picker()); } }, "switch") : null)),
         ui.area === "fitness" && h("nav", { class: "sub" }, fitTabs.map(([t, label]) =>

@@ -12,6 +12,7 @@ sync = { path = "../sync" }
 todo-core = { path = "../todo-core" }
 fitness-core = { path = "../fitness-core" }
 shopping-core = { path = "../shopping-core" }
+assistant-core = { path = "../assistant-core" }
 tokio.workspace = true
 web = { path = "../web" }
 axum.workspace = true

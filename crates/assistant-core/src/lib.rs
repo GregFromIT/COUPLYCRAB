@@ -7,9 +7,11 @@
 //! Design and rationale: PLAN-v2 Track C, docs/DECISIONS.md "Assistant core (v2-M6)".
 
 pub mod agent;
+pub mod demo;
 pub mod llm;
 pub mod tools;
 
+pub use demo::DemoLlm;
 pub use agent::{Agent, AgentError, Answer, ChatTurn, ToolRun};
 pub use llm::{ChatRequest, ChatResponse, FakeLlmClient, LlmClient, LlmError, Message, OllamaClient, ToolSpec};
 pub use tools::{Context, StoreTools, ToolBackend};

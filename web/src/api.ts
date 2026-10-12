@@ -92,6 +92,9 @@ export const api = {
   clearChecked: (listId: string) => req<{ cleared: number }>("POST", `/lists/${listId}/clear-checked`),
   suggestions: (listId: string, text: string) => req<string[]>("GET", `/lists/${listId}/suggestions${q({ q: text })}`),
 
+  assistantStatus: () => req<{ configured: boolean; model: string | null; fake: boolean }>("GET", "/assistant/status"),
+  assistantChat: (message: string, history: { role: string; content: string }[]) => req<any>("POST", "/assistant/chat", { message, history }),
+
   tests: (kind: string) => req<any[]>("GET", `/tests${q({ kind })}`),
   putTest: (id: string, t: Record<string, unknown>) => req<any>("PUT", `/tests/${id}`, t),
 };

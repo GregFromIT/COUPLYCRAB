@@ -4,7 +4,7 @@ import { ApiError } from "./api";
 import { h, storage } from "./dom";
 
 export type Fit = "today" | "log" | "programs" | "progress" | "exercises";
-export type Area = "fitness" | "shopping" | "todos";
+export type Area = "fitness" | "shopping" | "todos" | "assistant";
 export type Progress = "volume" | "strength" | "prs" | "tests";
 
 export const ui = {

@@ -32,6 +32,7 @@ pub fn routes() -> Router<AppState> {
         .route("/todos/{id}/uncomplete", post(uncomplete_todo))
         .merge(crate::training::routes())
         .merge(crate::shopping::routes())
+        .merge(crate::assistant::routes())
         .route("/exercises", get(list_exercises))
         .route("/exercises/{id}", put(put_exercise).patch(patch_exercise))
         .route("/templates", get(list_templates))

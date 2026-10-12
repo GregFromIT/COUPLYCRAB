@@ -5,6 +5,7 @@
 
 mod api;
 mod assets;
+mod assistant;
 mod events;
 mod identity;
 mod shopping;
@@ -124,6 +125,8 @@ pub struct Inner {
     pub shopping: Arc<Mutex<dyn ShoppingStore + Send>>,
     /// Tell it when a doc changed by other means too (a peer merge): see `Events`.
     pub events: Events,
+    /// The assistant, if configured (`AppState::with_assistant`).
+    pub(crate) assistant: Option<assistant::Handle>,
     /// Called after each successful write: persist the doc and trigger sync.
     pub saved: SavedHook,
     pub web: WebConfig,
@@ -154,7 +157,15 @@ impl AppState {
         let mut users: BTreeSet<String> = web.users.values().flat_map(|u| u.ids()).collect();
         users.insert(default_user.to_string());
         users.extend(dev_user.clone());
-        Ok(AppState(Arc::new(Inner { todo, fit, shopping, events, saved, web, tz, known_users: users.into_iter().collect(), dev_user, now: Utc::now })))
+        Ok(AppState(Arc::new(Inner { todo, fit, shopping, events, assistant: None, saved, web, tz, known_users: users.into_iter().collect(), dev_user, now: Utc::now })))
+    }
+
+    /// Turn on `/assistant/chat`, answering with `llm` (`model` is its name; `fake` marks the
+    /// built-in keyword demo). Call before cloning the state, like `with_clock`.
+    pub fn with_assistant(self, llm: Arc<dyn assistant_core::LlmClient>, model: &str, fake: bool) -> Self {
+        let mut inner = Arc::try_unwrap(self.0).unwrap_or_else(|_| panic!("with_assistant before cloning the state"));
+        inner.assistant = Some(assistant::Handle::new(&inner, llm, model, fake));
+        AppState(Arc::new(inner))
     }
 
     /// Replace the clock (tests).

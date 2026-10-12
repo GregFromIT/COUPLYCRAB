@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! peer run [--config <path>]
-//! peer serve [--config <path>] [--dev-user <user_id>]
+//! peer serve [--config <path>] [--dev-user <user_id>] [--fake-llm]
 //! peer todo add "<title>" [--due YYYY-MM-DD] [--config <path>]
 //! peer todo list [--config <path>]
 //! peer fitness sessions [--config <path>]
@@ -11,6 +11,7 @@
 //! ```
 //! The data dir is the directory containing the config file (default `./config.toml`).
 
+use assistant_core::{DemoLlm, OllamaClient};
 use fitness_core::{AmFitnessStore, FitnessStore};
 use peer_app::{doc_path, kind_label, on_remote_change, poll_disk, sync_kind, Res, Saver};
 use shopping_core::AmShoppingStore;
@@ -25,12 +26,18 @@ use todo_core::{AmTodoStore, TodoStore};
 
 const USAGE: &str = "usage:
   peer run [--config <path>]
-  peer serve [--config <path>] [--dev-user <user_id>]
+  peer serve [--config <path>] [--dev-user <user_id>] [--fake-llm]
   peer todo add \"<title>\" [--due YYYY-MM-DD] [--config <path>]
   peer todo list [--config <path>]
   peer fitness sessions [--config <path>]
   peer fitness migrate-v1 [--config <path>]
   peer fitness recommend --workout <id> [--program <id>] [--user <id>] [--date YYYY-MM-DD] [--config <path>]";
+
+/// Pull a bare `--flag` out of `args`.
+fn take_flag(args: &mut Vec<String>, name: &str) -> bool {
+    let found = args.iter().position(|a| a == name);
+    found.map(|i| args.remove(i)).is_some()
+}
 
 /// Pull `--name value` out of `args`.
 fn take_opt(args: &mut Vec<String>, name: &str) -> Res<Option<String>> {
@@ -64,6 +71,7 @@ fn real_main() -> Res<()> {
     }
     let due = take_opt(&mut args, "--due")?;
     let dev_user = take_opt(&mut args, "--dev-user")?;
+    let fake_llm = take_flag(&mut args, "--fake-llm");
     let (workout, program, user, date) = (
         take_opt(&mut args, "--workout")?,
         take_opt(&mut args, "--program")?,
@@ -72,8 +80,8 @@ fn real_main() -> Res<()> {
     );
     let a: Vec<&str> = args.iter().map(String::as_str).collect();
     match a.as_slice() {
-        ["run"] => run(&dir, None),
-        ["serve"] => run(&dir, Some(dev_user)),
+        ["run"] => run(&dir, None, false),
+        ["serve"] => run(&dir, Some(dev_user), fake_llm),
         ["todo", "add", title] => {
             let mut s = AmTodoStore::from_doc(persist::load(&doc_path(&dir, TODO))?)?;
             let t = s.add(title, "", due.as_deref())?;
@@ -166,12 +174,23 @@ fn print_todos(s: &AmTodoStore) -> Res<()> {
 struct WebSection {
     #[serde(default)]
     web: web::WebConfig,
+    #[serde(default)]
+    assistant: Option<AssistantConfig>,
+}
+
+/// `[assistant]` in `config.toml`: where Ollama is and which model to use.
+#[derive(serde::Deserialize)]
+struct AssistantConfig {
+    /// e.g. `http://127.0.0.1:11434` (plain http: Ollama has no TLS).
+    url: String,
+    /// e.g. `qwen3:8b`.
+    model: String,
 }
 
 /// `peer run` (sync only) and `peer serve` (sync + HTTP on `[web] listen`).
 /// `serve = Some(dev_user)` turns on the HTTP server.
 #[tokio::main]
-async fn run(dir: &Path, serve: Option<Option<String>>) -> Res<()> {
+async fn run(dir: &Path, serve: Option<Option<String>>, fake_llm: bool) -> Res<()> {
     let cfg = Config::load(dir)?.ok_or_else(|| format!("no {} in {}", sync::config::FILE, dir.display()))?;
     let device = sync::config::device_id(dir)?;
     let todo = Arc::new(Mutex::new(AmTodoStore::from_doc(persist::load(&doc_path(dir, TODO))?)?));
@@ -200,7 +219,8 @@ async fn run(dir: &Path, serve: Option<Option<String>>) -> Res<()> {
         None => tokio::spawn(std::future::pending()),
         Some(dev_user) => {
             let text = std::fs::read_to_string(dir.join(sync::config::FILE))?;
-            let web_cfg = toml::from_str::<WebSection>(&text).map_err(|e| format!("[web]: {e}"))?.web;
+            let parsed = toml::from_str::<WebSection>(&text).map_err(|e| format!("config.toml: {e}"))?;
+            let (web_cfg, assistant_cfg) = (parsed.web, parsed.assistant);
             let (s, n) = (saver.clone(), node.clone());
             // ponytail: blocking file write inside the request; move to spawn_blocking if saves get slow.
             let saved: web::SavedHook = Arc::new(move |kind| {
@@ -209,6 +229,20 @@ async fn run(dir: &Path, serve: Option<Option<String>>) -> Res<()> {
                 Ok(())
             });
             let state = web::AppState::new(todo.clone(), fit.clone(), shopping.clone(), events.clone(), saved, web_cfg.clone(), &cfg.user_id, dev_user.clone())?;
+            let state = match (fake_llm, assistant_cfg) {
+                (true, _) => {
+                    println!("assistant: the built-in keyword demo (--fake-llm), not a language model");
+                    state.with_assistant(Arc::new(DemoLlm), "demo", true)
+                }
+                (false, Some(a)) => {
+                    if !a.url.starts_with("http://") {
+                        return Err(format!("[assistant] url {:?}: use http:// (Ollama serves plain http)", a.url).into());
+                    }
+                    println!("assistant: {} at {}", a.model, a.url);
+                    state.with_assistant(Arc::new(OllamaClient::new(&a.url, assistant_core::agent::TIMEOUT)?), &a.model, false)
+                }
+                (false, None) => state,
+            };
             let http_listener = tokio::net::TcpListener::bind(web_cfg.listen).await?;
             println!("http on http://{}{}", http_listener.local_addr()?, dev_user.map(|u| format!(" (dev user {u})")).unwrap_or_default());
             tokio::spawn(async move { axum::serve(http_listener, web::router(state)).await })

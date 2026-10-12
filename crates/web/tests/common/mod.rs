@@ -32,6 +32,11 @@ pub struct App {
 }
 
 pub fn app(web: WebConfig, dev_user: Option<&str>) -> App {
+    app_with(web, dev_user, |s| s)
+}
+
+/// Like `app`, with a chance to change the state (e.g. `with_assistant`) before the router is built.
+pub fn app_with(web: WebConfig, dev_user: Option<&str>, f: impl FnOnce(AppState) -> AppState) -> App {
     let todo = Arc::new(Mutex::new(AmTodoStore::new()));
     let fit = Arc::new(Mutex::new(AmFitnessStore::new()));
     let shopping = Arc::new(Mutex::new(AmShoppingStore::new()));
@@ -54,6 +59,7 @@ pub fn app(web: WebConfig, dev_user: Option<&str>) -> App {
     .unwrap()
     // 2026-10-11 14:30 UTC = 2026-10-12 01:30 in Sydney (AEDT, +11).
     .with_clock(|| "2026-10-11T14:30:00Z".parse().unwrap());
+    let state = f(state);
     App { router: web::router(state), saves, todo, fit, shopping, events }
 }
 

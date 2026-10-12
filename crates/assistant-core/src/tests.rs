@@ -528,3 +528,22 @@ fn tool_call_message_shape_matches_ollamas_docs() {
     assert_eq!(parsed.tool_calls, vec![ToolCall { function: crate::llm::FunctionCall { name: "x".into(), arguments: json!({ "a": 1 }) } }]);
     let _ = default_gym; // (keeps the import used when fixtures change)
 }
+
+#[tokio::test]
+async fn the_demo_model_routes_by_keyword_and_reads_results_back() {
+    let w = world(&[("2026-10-05", 80.0, 10)]);
+    let demo = || agent(Arc::new(crate::DemoLlm), &w);
+    let a = demo().ask(&ctx(), &[], "What's the workout today?").await.unwrap();
+    assert_eq!(a.tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["get_next_workout"]);
+    assert!(a.answer.contains("Upper A") && a.answer.contains("82.5 kg"), "{}", a.answer);
+    let a = demo().ask(&ctx(), &[], "chest sets this week and the shopping list").await.unwrap();
+    assert_eq!(a.tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["get_weekly_volume", "get_shopping_list"]);
+    assert!(a.answer.contains("Groceries: Milk, Apples ✓"), "{}", a.answer);
+    let a = demo().ask(&ctx(), &[], "what's overdue?").await.unwrap();
+    assert!(a.answer.contains("Call the plumber"), "{}", a.answer);
+    let a = demo().ask(&ctx(), &[], "tell me a joke").await.unwrap();
+    assert!(a.tools.is_empty() && a.answer.contains("demo assistant"), "{}", a.answer);
+    // It answers from the question being asked now, not an earlier turn's tool results.
+    let hist = [ChatTurn { role: "user".into(), content: "workout?".into() }, ChatTurn { role: "assistant".into(), content: "Upper A".into() }];
+    assert!(demo().ask(&ctx(), &hist, "beep test").await.unwrap().answer.contains("9.1"));
+}
