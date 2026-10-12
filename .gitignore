@@ -7,3 +7,5 @@ node_modules/
 *.automerge
 config.toml
 !/crates/*/tests/fixtures/*.automerge
+/web/dist
+*.log

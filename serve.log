@@ -1,2 +1,0 @@
-host (a040bb8a-32d6-4c1d-b252-719bff9d6cf1) sync listening on 127.0.0.1:7441, peers []
-http on http://127.0.0.1:7430 (dev user alice)
