@@ -40,7 +40,7 @@ Fitness logs are append-mostly and wouldn't strictly need a CRDT: per-device app
 
 ## Data model (M1/M2)
 
-- **Deterministic initial change.** Each doc's root objects (`todos`, `exercises`, …) are created in one change with a fixed all-zero actor ID and timestamp 0 (`init_doc()` in each core), then the doc switches to a random actor. Every device therefore produces the byte-identical first change, so the maps share one object ID. Alternative: let the first device create the doc and have others only ever receive it — fails when two fresh devices both start offline (one `todos` map would hide the other on merge; tested in `fresh_devices_converge`). Background: https://automerge.org/docs/reference/under-the-hood/merge_rules/ (conflicting puts on the same key).
+- **Deterministic initial change.** Each doc's root objects (`todos`, `exercises`, …) are created in one change with a fixed all-zero actor ID and timestamp 0 (`init_doc()` in each core), then the doc switches to a random actor. Every device therefore produces the byte-identical first change, so the maps share one object ID. Alternative: let the first device create the doc and have others only ever receive it — fails when two fresh devices both start offline (one `todos` map would hide the other on merge; tested in `fresh_devices_converge`). Background: https://automerge.org/docs/reference/documents/conflicts/ (conflicting puts on the same key).
 - **Actor ID per process, not per device.** `Automerge` picks a random actor on each load. Reusing the device ID as actor would break if the `peer` CLI and `peer run` open the same data dir at once (same actor, two different changes with the same sequence number). The stable device ID is stored in `<data_dir>/device_id` per PLAN §3.13 but is informational in v0.
 - **Edits go through `autosurgeon::reconcile_prop` on a single item**, not a whole-doc reconcile. Automerge's `put` of an identical scalar is a no-op, so only changed fields produce ops; this is what makes "concurrent edits to different fields both survive" work (tested).
 - **Overdue-first sort.** Overdue todos have `due < today`, so sorting dated ascending already puts them first; no "today" parameter needed. Completed todos are not moved; the plan doesn't say to.
@@ -88,4 +88,16 @@ Fitness logs are append-mostly and wouldn't strictly need a CRDT: per-device app
 
 ## Suggested for later
 
-- (filled in as the run goes)
+Not built (PLAN says minimal); listed so they aren't forgotten.
+
+- **Edit/delete for exercises, templates, sessions and test results.** v0 has add + list only for fitness (the plan lists edits only for todos). The store already soft-deletes via `deleted`; it needs trait methods + UI.
+- **Settings screen** to change `config.toml` after first run (now: edit the file, restart). Also a "retry sync" button instead of restarting when the bind fails.
+- **Show completed todos last** or hide them behind a toggle; the plan's sort doesn't mention completion.
+- **Per-exercise view of 1RM / max-reps results** (now one list per test kind, mixing exercises).
+- **Persist `sync::State` per peer** (`State::encode`) to save a round trip on reconnect.
+- **Tailscale ACL** restricting `tcp:7420` to your four devices (https://tailscale.com/kb/1018/acls).
+- **Doc size check** surfaced in the UI (warn near 10 MB; the frame limit is 16 MiB, see LEARNING §5).
+- **`typescript` devDependency + `npm run check`** once Node is upgraded (see Desktop app section).
+- **Upgrade Node and Vite** (BLOCKERS.md).
+- **Automated UI smoke test.** The M5 check was done by hand over CDP; a WebDriver test (https://v2.tauri.app/develop/tests/webdriver/) could make it repeatable.
+- **Application-level peer auth** (pre-shared key in config) if the tailnet ever has devices you don't fully trust.

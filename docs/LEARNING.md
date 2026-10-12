@@ -35,7 +35,19 @@ Each section: what it is, why this project needs it, where it lives, source.
 
 **Where:** `crates/todo-core/src/lib.rs`, `crates/fitness-core/src/lib.rs`.
 
-**Sources:** https://automerge.org/docs/hello/, https://docs.rs/automerge/0.12.0/automerge/, https://docs.rs/autosurgeon/0.14.0/autosurgeon/, Shapiro et al. "Conflict-free Replicated Data Types" (2011) https://inria.hal.science/inria-00609399
+**Sources:** https://automerge.org/docs/hello/, conflict resolution: https://automerge.org/docs/reference/documents/conflicts/, https://docs.rs/automerge/0.12.0/automerge/, https://docs.rs/autosurgeon/0.14.0/autosurgeon/, Shapiro et al. "Conflict-free Replicated Data Types" (2011) https://inria.hal.science/inria-00609399
+
+## 3. The Automerge sync protocol
+
+**What:** two peers exchange `sync::Message`s until both have every change. Each message carries the sender's *heads* (hashes of its latest changes), a *Bloom filter* summarising the changes it has, the heads it thinks the other side needs, and any changes it believes the other side is missing.
+
+**What `sync::State` tracks:** for one peer, what we've learned about *their* doc: their last known heads, what they've told us they have (Bloom filter), what we've already sent and are waiting to have acknowledged (`in_flight`). Without it every message would have to resend everything.
+
+**Why one per peer (and per doc):** the state is a model of one remote replica of one document. Alice's phone and Bob's laptop are missing different changes, so they need separate states. In this code a connection holds one `State` per doc kind (`states: BTreeMap<u8, State>` in `crates/sync/src/lib.rs`, `SyncNode::connection`), freshly created per connection. A fresh state is always correct — the first round just re-establishes heads; persisting it (`State::encode`) would only save a round trip on reconnect.
+
+**How two peers know they're done:** `generate_sync_message` returns `None` when, according to the state, the other side has everything we have and we have everything they've announced. When both sides return `None` they've converged. The connection loop in `SyncNode::connection` is: generate-and-send for every doc → wait for (incoming frame | local change | 30 s tick) → repeat. It never "finishes"; it idles until something changes.
+
+**Sources:** https://docs.rs/automerge/0.12.0/automerge/sync/index.html ; the Bloom-filter sync design: Kleppmann & Howard, "Byzantine Eventual Consistency and the Fundamental Limits of Peer-to-Peer Databases", https://arxiv.org/abs/2012.00472
 
 ## 4. Fitness data is append-mostly: it wouldn't strictly need a CRDT
 
@@ -50,18 +62,6 @@ Each section: what it is, why this project needs it, where it lives, source.
 **Beep test scores** are `BeepScore { level: u8, shuttle: u8 }` with derived `Ord` (field order = comparison order). As floats, "8.10" parses to 8.1 which is less than 8.5 — wrong, since shuttle 10 comes after shuttle 5. Test `beep_ordering`.
 
 **Source:** https://docs.rs/automerge/0.12.0/automerge/ ; Rust derived `Ord` is lexicographic by field order: https://doc.rust-lang.org/std/cmp/trait.Ord.html#derivable
-
-## 3. The Automerge sync protocol
-
-**What:** two peers exchange `sync::Message`s until both have every change. Each message carries the sender's *heads* (hashes of its latest changes), a *Bloom filter* summarising the changes it has, the heads it thinks the other side needs, and any changes it believes the other side is missing.
-
-**What `sync::State` tracks:** for one peer, what we've learned about *their* doc: their last known heads, what they've told us they have (Bloom filter), what we've already sent and are waiting to have acknowledged (`in_flight`). Without it every message would have to resend everything.
-
-**Why one per peer (and per doc):** the state is a model of one remote replica of one document. Alice's phone and Bob's laptop are missing different changes, so they need separate states. In this code a connection holds one `State` per doc kind (`states: BTreeMap<u8, State>` in `crates/sync/src/lib.rs`, `SyncNode::connection`), freshly created per connection. A fresh state is always correct — the first round just re-establishes heads; persisting it (`State::encode`) would only save a round trip on reconnect.
-
-**How two peers know they're done:** `generate_sync_message` returns `None` when, according to the state, the other side has everything we have and we have everything they've announced. When both sides return `None` they've converged. The connection loop in `SyncNode::connection` is: generate-and-send for every doc → wait for (incoming frame | local change | 30 s tick) → repeat. It never "finishes"; it idles until something changes.
-
-**Sources:** https://docs.rs/automerge/0.12.0/automerge/sync/index.html ; the Bloom-filter sync design: Kleppmann & Howard, "Byzantine Eventual Consistency and the Fundamental Limits of Peer-to-Peer Databases", https://arxiv.org/abs/2012.00472
 
 ## 5. Framing a TCP stream, and why there's a size limit
 
@@ -93,6 +93,36 @@ Each section: what it is, why this project needs it, where it lives, source.
 **Not done in v0:** application-level peer authentication (e.g. a shared key). Any device on your tailnet whose IP matches a configured peer name is trusted.
 
 **Sources:** https://tailscale.com/blog/how-tailscale-works, https://tailscale.com/kb/1232/derp-servers, https://tailscale.com/kb/1081/magicdns
+
+## 7. Schema evolution across peers running different builds
+
+**What:** with no server, there's no moment where "the database is migrated". Your laptop may run a build with a new field while the phone still runs last month's build, and they sync the same document. Both must keep working, and neither may destroy data the other wrote.
+
+**Rules this project follows** (also in DECISIONS.md):
+1. Root key `schema_version` (currently 1) in each doc, so a future build can tell what it's looking at.
+2. Additive changes only. A new field is `Option<T>`: autosurgeon hydrates a missing key as `None`, so a new build reads old data.
+3. Never rename or repurpose a field. An old build would keep writing the old name/meaning.
+4. Unknown enum variants don't fail. `MeasurementType`, `SessionStatus` and `TestKind` are generated by the `string_enum!` macro in `crates/fitness-core/src/lib.rs`: stored as strings, an unknown string hydrates to `Unknown("Laps")` and is written back unchanged. Test `unknown_enum_variant_survives_roundtrip`. With autosurgeon's derived enum `Hydrate`, an old build would fail to load the *whole* fitness doc the first time a new build used a new variant.
+5. Old builds must not delete new fields. autosurgeon's derived struct `Reconcile` only writes the fields the struct knows and leaves other keys in the Automerge map alone, and we reconcile one item at a time with only changed fields producing ops. So an old build editing a todo's title leaves a newer build's `priority` field (say) intact.
+
+**What's not handled:** a change that *can't* be additive (splitting a field, changing units). That would need a new field plus code in the new build that reads the old one as a fallback, keeping both until every device has upgraded.
+
+**Sources:** autosurgeon `Hydrate` for `Option` / missing keys: https://docs.rs/autosurgeon/0.14.0/autosurgeon/hydrate/trait.Hydrate.html ; the same idea in protocol design (Protocol Buffers' "don't reuse field numbers", unknown-field preservation): https://protobuf.dev/programming-guides/proto3/#updating
+
+## 8. Android background limits: why v0 only syncs in the foreground
+
+**What:** Android aggressively limits what apps do when not on screen, to save battery. Background apps get their CPU and network deferred (Doze mode, App Standby buckets), and their process can be killed whenever memory is needed. A plain tokio task in the app process, like our sync loop, simply stops running a few minutes after the app is backgrounded.
+
+**The proper ways to run in the background**, each with costs:
+- *WorkManager* periodic jobs: minimum 15-minute interval, run when the OS chooses. Needs Kotlin code that starts the Rust sync, connects, syncs, exits.
+- *Foreground service*: keeps running, but must show a permanent notification, and Android 14+ requires declaring a service type that matches the purpose (sync isn't a great fit for any).
+- Both mean loading the doc and running sync from a context with no UI, which a Tauri app isn't set up for out of the box.
+
+**v0 choice:** the phone syncs only while the app is open (startup, each change, every 30 s). Since a laptop or the future NAS peer is usually online, opening the app is enough to catch up. Tailscale itself has the same issue on Android: it runs as a VPN service so it stays up, but our app doesn't.
+
+**Where:** no Android-specific code yet; see `docs/ANDROID.md`.
+
+**Sources:** https://developer.android.com/training/monitoring-device-state/doze-standby , https://developer.android.com/develop/background-work/background-tasks/persistent , https://developer.android.com/develop/background-work/services/fgs
 
 ## Try it yourself: two peers on one machine
 
@@ -133,33 +163,3 @@ Things to try:
 - Watch the bytes: `todo.automerge` is the output of `Automerge::save()`, the compressed change history.
 
 What happens under the hood: `peer todo add` loads `todo.automerge`, makes the change, and calls `persist::save`, which locks the file, merges what's on disk and writes atomically (`crates/sync/src/persist.rs`). The running `peer run` polls the file's mtime every second (`crates/peer/src/main.rs`), merges it, and calls `SyncNode::local_change()`, which wakes every connection to generate a sync message.
-
-## 7. Schema evolution across peers running different builds
-
-**What:** with no server, there's no moment where "the database is migrated". Your laptop may run a build with a new field while the phone still runs last month's build, and they sync the same document. Both must keep working, and neither may destroy data the other wrote.
-
-**Rules this project follows** (also in DECISIONS.md):
-1. Root key `schema_version` (currently 1) in each doc, so a future build can tell what it's looking at.
-2. Additive changes only. A new field is `Option<T>`: autosurgeon hydrates a missing key as `None`, so a new build reads old data.
-3. Never rename or repurpose a field. An old build would keep writing the old name/meaning.
-4. Unknown enum variants don't fail. `MeasurementType`, `SessionStatus` and `TestKind` are generated by the `string_enum!` macro in `crates/fitness-core/src/lib.rs`: stored as strings, an unknown string hydrates to `Unknown("Laps")` and is written back unchanged. Test `unknown_enum_variant_survives_roundtrip`. With autosurgeon's derived enum `Hydrate`, an old build would fail to load the *whole* fitness doc the first time a new build used a new variant.
-5. Old builds must not delete new fields. autosurgeon's derived struct `Reconcile` only writes the fields the struct knows and leaves other keys in the Automerge map alone, and we reconcile one item at a time with only changed fields producing ops. So an old build editing a todo's title leaves a newer build's `priority` field (say) intact.
-
-**What's not handled:** a change that *can't* be additive (splitting a field, changing units). That would need a new field plus code in the new build that reads the old one as a fallback, keeping both until every device has upgraded.
-
-**Sources:** autosurgeon `Hydrate` for `Option` / missing keys: https://docs.rs/autosurgeon/0.14.0/autosurgeon/hydrate/trait.Hydrate.html ; the same idea in protocol design (Protocol Buffers' "don't reuse field numbers", unknown-field preservation): https://protobuf.dev/programming-guides/proto3/#updating
-
-## 8. Android background limits: why v0 only syncs in the foreground
-
-**What:** Android aggressively limits what apps do when not on screen, to save battery. Background apps get their CPU and network deferred (Doze mode, App Standby buckets), and their process can be killed whenever memory is needed. A plain tokio task in the app process, like our sync loop, simply stops running a few minutes after the app is backgrounded.
-
-**The proper ways to run in the background**, each with costs:
-- *WorkManager* periodic jobs: minimum 15-minute interval, run when the OS chooses. Needs Kotlin code that starts the Rust sync, connects, syncs, exits.
-- *Foreground service*: keeps running, but must show a permanent notification, and Android 14+ requires declaring a service type that matches the purpose (sync isn't a great fit for any).
-- Both mean loading the doc and running sync from a context with no UI, which a Tauri app isn't set up for out of the box.
-
-**v0 choice:** the phone syncs only while the app is open (startup, each change, every 30 s). Since a laptop or the future NAS peer is usually online, opening the app is enough to catch up. Tailscale itself has the same issue on Android: it runs as a VPN service so it stays up, but our app doesn't.
-
-**Where:** no Android-specific code yet; see `docs/ANDROID.md`.
-
-**Sources:** https://developer.android.com/training/monitoring-device-state/doze-standby , https://developer.android.com/develop/background-work/background-tasks/persistent , https://developer.android.com/develop/background-work/services/fgs
