@@ -2,7 +2,6 @@
 node_modules/
 /app/dist
 /app/src-tauri/target
-/app/src-tauri/gen
 # local test data dirs (peer demo)
 /data*/
 *.automerge
