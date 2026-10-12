@@ -168,22 +168,24 @@ What happens under the hood: `peer todo add` loads `todo.automerge`, makes the c
 
 # v1 notes (web app + data API)
 
-## v1.7 Deterministic scheduling maths in `planned_for`
+## v1.1 Local-first native peers vs a hosted web app
 
-**What:** `FitnessStore::planned_for(user, date)` (`crates/fitness-core/src/plan.rs`) turns stored facts (weekly plan, blocks, templates with progression rules) plus a date into concrete targets. Nothing about "today's workout" is stored; it's recomputed every time.
+**What changed:** v0 put a full copy of the data on every device and synced peer-to-peer (sections 1–3). v1 puts the one live copy on an always-on host (`peer serve`), and phones and laptops are just browsers talking to its API over the tailnet (`crates/web`, `web/`).
 
-**Why deterministic:** the result must be the same on the server, on a native v0/v1 peer, and in a test, today or in a year. So it depends only on the inputs: no "now", no randomness, no iteration over unordered hash maps where order matters (items are sorted by `index`, overlapping blocks are broken by `(start_date, id)`).
+**What v1 gave up:**
+- *Offline use on phones.* No connection to the host means no app. The mid-workout case is softened, not solved: a failed write keeps your entries on screen and retries safely (v1.2), but you can't open the app at all without the host. A service worker (offline cache + queued writes) would bring some of it back; out of scope for v1.
+- *No single point of failure.* If the host is off, nobody can use the app. The v0 design had no server to go down.
+- *Instant local reads.* Every screen is a round trip to the host (fast on a tailnet, but not zero).
 
-**The maths:**
-- `days = date − block.start_date`. In the block iff `0 ≤ days < weeks × 7`. `week = days / 7 + 1` (integer division), so day 0–6 is week 1. Test `week_index_edges` covers day 1, the last day, the day after, the day before.
-- Progression steps = completed non-deload weeks before this one: `(week − 1) − (1 if the deload week is earlier)`. Week 1 → 0 steps.
-- `LinearLoad`: `load = base + per_week × steps`. `LinearReps`: `reps = base + floor(per_week × steps)`.
-- Deload week: same steps as the week before it would have had, then `load × pct/100`. The week after a deload uses one step fewer than its week number suggests, which is what "deload doesn't advance progression" means. With +2.5 kg/week from 100 kg and a 60 % deload in week 4: week 3 = 105, week 4 = 107.5 × 0.6 = 64.5, week 5 = 107.5, week 8 = 115 (`deload_applies_pct_and_does_not_advance_progression`).
-- Weekday from the date (`chrono::Datelike::weekday`), then slots `<day>_am`, `<day>_pm`.
+**What v1 gained:**
+- *Works on every device now*, with no Android build, SDK, app store or per-device install (the v0 Android build was blocked; see `docs/ANDROID.md`).
+- *One place to update.* Deploy one binary on the host; every browser gets the new version on reload. In v0 every device had to be upgraded, and old and new builds had to coexist (v0 section 7).
+- *Simpler mental model for edits:* one copy, applied in order (v1.6).
+- *A data API.* The same endpoints the frontend uses are what the v2 assistant will call (`docs/API.md`).
 
-**Why store rules instead of the computed targets:** changing the base load or the rule changes all future weeks consistently, and there's nothing to keep in sync. The cost: changing a template mid-block also changes what past weeks "were". Logged sessions keep what was actually done (`block_id`, `block_week`, the sets), so history is still accurate.
+**What stayed:** the Automerge docs, persistence and v0 sync all still run on the host, so a native v0 peer (or a second host) can still sync with it, and nothing about the stored data changed except additive fields (schema 2).
 
-**Source:** chrono `NaiveDate` arithmetic: https://docs.rs/chrono/0.4.45/chrono/naive/struct.NaiveDate.html
+**Sources:** "Local-first software", section on cloud apps vs local-first: https://www.inkandswitch.com/local-first/ ; Service Workers (the offline route not taken): https://developer.mozilla.org/en-US/docs/Web/API/Service_Worker_API
 
 ## v1.2 REST API design here, and why `PUT` with client IDs makes writes idempotent
 
@@ -223,19 +225,6 @@ Plus `SameSite=Strict` on the picker cookie, so the browser doesn't send it on r
 
 **Sources:** https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS#simple_requests , https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html
 
-## v1.6 Why conflicts mostly vanish with a single server, and where the CRDT still matters
-
-**What changed:** in v0 every device had its own copy and edited it offline, so two edits to the same todo could happen "at the same time" and Automerge had to merge them. In v1 both browsers talk to one `peer serve` process holding one copy of each doc behind a mutex. Requests are applied one after another; the second sees the first's result. Nothing needs merging: it behaves like an ordinary single-writer database.
-
-**Where the CRDT still matters:**
-- The host still runs v0 sync (`peer serve` = `peer run` + HTTP). A native peer (the frozen v0 Tauri app, a second `peer` on a NAS) can edit offline and sync later; those edits merge exactly as in v0.
-- Moving hosts: copy the `.automerge` files, or run two hosts for a while and let them sync. Nothing is lost.
-- The idempotency checks (`put_*`) are about *retries of the same request*, not concurrent edits. The CRDT doesn't help there, which is why they're separate.
-
-**The remaining "conflict":** last write wins between two browsers editing the same field seconds apart (e.g. both rename a template); the second `PATCH` overwrites the first. With two people in one house that's acceptable. The fix would be version checks (`If-Match` + ETags).
-
-**Source:** https://www.rfc-editor.org/rfc/rfc9110#name-if-match (the fix, not used)
-
 ## v1.5 Secure contexts: why wake lock (and later service workers) need HTTPS
 
 **What:** browsers expose some APIs only to pages in a *secure context*: loaded over HTTPS, or from `localhost` / `127.0.0.1` (treated as trustworthy because traffic never leaves the machine). `window.isSecureContext` tells you which you're in. Screen Wake Lock, service workers, `crypto.randomUUID`, geolocation and the clipboard API are all gated this way.
@@ -249,3 +238,33 @@ Plus `SameSite=Strict` on the picker cookie, so the browser doesn't send it on r
 - A future offline mode (service worker, PWA install; out of scope for v1) has the same requirement.
 
 **Sources:** https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts , https://developer.mozilla.org/en-US/docs/Web/API/Screen_Wake_Lock_API , https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts/features_restricted_to_secure_contexts
+
+## v1.6 Why conflicts mostly vanish with a single server, and where the CRDT still matters
+
+**What changed:** in v0 every device had its own copy and edited it offline, so two edits to the same todo could happen "at the same time" and Automerge had to merge them. In v1 both browsers talk to one `peer serve` process holding one copy of each doc behind a mutex. Requests are applied one after another; the second sees the first's result. Nothing needs merging: it behaves like an ordinary single-writer database.
+
+**Where the CRDT still matters:**
+- The host still runs v0 sync (`peer serve` = `peer run` + HTTP). A native peer (the frozen v0 Tauri app, a second `peer` on a NAS) can edit offline and sync later; those edits merge exactly as in v0.
+- Moving hosts: copy the `.automerge` files, or run two hosts for a while and let them sync. Nothing is lost.
+- The idempotency checks (`put_*`) are about *retries of the same request*, not concurrent edits. The CRDT doesn't help there, which is why they're separate.
+
+**The remaining "conflict":** last write wins between two browsers editing the same field seconds apart (e.g. both rename a template); the second `PATCH` overwrites the first. With two people in one house that's acceptable. The fix would be version checks (`If-Match` + ETags).
+
+**Source:** https://www.rfc-editor.org/rfc/rfc9110#name-if-match (the fix, not used)
+
+## v1.7 Deterministic scheduling maths in `planned_for`
+
+**What:** `FitnessStore::planned_for(user, date)` (`crates/fitness-core/src/plan.rs`) turns stored facts (weekly plan, blocks, templates with progression rules) plus a date into concrete targets. Nothing about "today's workout" is stored; it's recomputed every time.
+
+**Why deterministic:** the result must be the same on the server, on a native v0/v1 peer, and in a test, today or in a year. So it depends only on the inputs: no "now", no randomness, no iteration over unordered hash maps where order matters (items are sorted by `index`, overlapping blocks are broken by `(start_date, id)`).
+
+**The maths:**
+- `days = date − block.start_date`. In the block iff `0 ≤ days < weeks × 7`. `week = days / 7 + 1` (integer division), so day 0–6 is week 1. Test `week_index_edges` covers day 1, the last day, the day after, the day before.
+- Progression steps = completed non-deload weeks before this one: `(week − 1) − (1 if the deload week is earlier)`. Week 1 → 0 steps.
+- `LinearLoad`: `load = base + per_week × steps`. `LinearReps`: `reps = base + floor(per_week × steps)`.
+- Deload week: the same steps as a normal week would have (completed non-deload weeks), then `load × pct/100`; reps are not reduced. The week after a deload uses one step fewer than its week number suggests, which is what "deload doesn't advance progression" means. With +2.5 kg/week from 100 kg and a 60 % deload in week 4: week 3 = 105, week 4 = 107.5 × 0.6 = 64.5, week 5 = 107.5, week 8 = 115 (`deload_applies_pct_and_does_not_advance_progression`).
+- Weekday from the date (`chrono::Datelike::weekday`), then slots `<day>_am`, `<day>_pm`.
+
+**Why store rules instead of the computed targets:** changing the base load or the rule changes all future weeks consistently, and there's nothing to keep in sync. The cost: changing a template mid-block also changes what past weeks "were". Logged sessions keep what was actually done (`block_id`, `block_week`, the sets), so history is still accurate.
+
+**Source:** chrono `NaiveDate` arithmetic: https://docs.rs/chrono/0.4.45/chrono/naive/struct.NaiveDate.html

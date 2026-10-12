@@ -168,7 +168,7 @@ Not built (PLAN says minimal); listed so they aren't forgotten.
 
 ## Single binary (v1-M4)
 
-- **`rust-embed =8.12.0`** with the `mime-guess` feature (for `Content-Type`). 8.13.0 was five days old, so 8.12.0 (2026-07-08) was pinned, and `rust-embed-impl` / `rust-embed-utils` were pinned to 8.12.0 in `Cargo.lock` with `cargo update -p … --precise 8.12.0` (the crate's caret dependency had pulled 8.13.0). Changelog: https://git.sr.ht/~pyrossh/rust-embed/tree/master/item/CHANGELOG.md
+- **`rust-embed =8.12.0`** with the `mime-guess` feature (for `Content-Type`). 8.13.0 was five days old, so 8.12.0 (2026-07-08) was pinned, and `rust-embed-impl` / `rust-embed-utils` were pinned to 8.12.0 in `Cargo.lock` with `cargo update -p … --precise 8.12.0` (the crate's caret dependency had pulled 8.13.0). Changelog: https://docs.rs/crate/rust-embed/8.12.0/source/CHANGELOG.md (repo: https://pyrossh.dev/repos/rust-embed)
 - **Embedding is in `crates/web/src/assets.rs`**, as the router's fallback (anything not under `/api/v1`). `#[allow_missing = true]` so `cargo build`/`cargo test` work on a fresh clone without Node; `/` then answers 404 with "run npm run build". Release builds must run `npm run build` in `web/` **first**, since the files are read at compile time. Debug builds read `web/dist` from disk per request (rust-embed default without `debug-embed`).
 - **Cache headers:** `assets/*` (content-hashed by Vite) `public, max-age=31536000, immutable`; everything else `no-cache`, so a new deploy is picked up on the next load.
 - **No SPA fallback:** the app has no client-side routes, so unknown paths are 404.
@@ -180,3 +180,18 @@ Not built (PLAN says minimal); listed so they aren't forgotten.
 - **`deploy/peer.service`:** runs as a dedicated `household` user with `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `NoNewPrivileges`, and write access only to `/var/lib/household`. `After=tailscaled.service` + `Restart=on-failure` (5 s): if the Tailscale IP isn't assigned yet at boot, the v0 sync bind fails and systemd retries. Not installed or tested (PLAN-v1: don't install it). Docs: https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html
 - **`tailscale serve` command** taken from the CLI reference: `tailscale serve --bg --https=443 127.0.0.1:7430`; the docs say proxies only support `http://127.0.0.1` targets, which matches `[web] listen`. Serve strips client-supplied identity headers, Q-encodes non-ASCII values (RFC 2047, handled), and sends no identity headers for tagged devices (then the picker shows). Sources: https://tailscale.com/docs/reference/tailscale-cli/serve , https://tailscale.com/docs/features/tailscale-serve
 - **Windows host:** no service wrapper. Run in a terminal or a Task Scheduler task; a Windows service would need extra code or a third-party wrapper.
+
+## Suggested for later (v1)
+
+Not built (PLAN-v1 says minimal); listed so they aren't forgotten.
+
+- **Edit templates and blocks in the UI** (the API already has `PATCH`). Today a template change means creating a new one.
+- **Delete for exercises, templates, sessions and test results** (API + UI). Fields exist (`deleted`); endpoints don't.
+- **Today for another date / the week ahead** (`GET /planned-day?date=` already supports it; the screen only shows today).
+- **Store test targets in the doc** instead of `localStorage`, so they follow you across devices.
+- **`GET` for external activities** (only the upsert exists), and linking them to sessions in the UI.
+- **Optimistic concurrency** (`ETag` / `If-Match`) if two people editing the same template ever becomes a problem (LEARNING v1.6).
+- **Offline queue** via a service worker, to log a workout with no signal and send it later (writes are already idempotent, so a queue could just replay them).
+- **`spawn_blocking` for saves** if writes ever feel slow (`ponytail:` in `crates/peer/src/main.rs`).
+- **A schema-evolution test for the reverse direction**: a v1 doc opened by the v0 build. Expected to work (v0 ignores unknown keys), but only reasoned, not tested.
+- **Automated browser test** for the frontend (the M3/M4 checks were scripted by hand over CDP).
