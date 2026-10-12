@@ -8,13 +8,13 @@ Checked on 2026-10-12:
 | `NDK_HOME` | not set |
 | JDK | present (`JAVA_HOME=C:\Program Files\Java\jdk-17.0.2`; JDK 21 also on PATH) |
 | Rust Android targets | not installed (only `x86_64-pc-windows-msvc`) |
-| Free disk on C: | ~1.4 GB, far too little for SDK + NDK + Gradle cache (plan on 10+ GB) |
+| Free disk on C: | ~1.4 GB at the time (later freed to ~32 GB; SDK + NDK + Gradle cache need 10+ GB) |
 
 Per PLAN §5 M6, nothing was installed. Steps for the owner, from https://v2.tauri.app/start/prerequisites/#android:
 
 ## 1. Install the SDK and NDK
 
-1. Free disk space first (see BLOCKERS.md).
+1. Make sure ~10 GB is free on C:.
 2. Install Android Studio: https://developer.android.com/studio (GUI installer).
 3. In Android Studio → Settings → Languages & Frameworks → Android SDK, install:
    - *SDK Platforms:* one recent Android platform

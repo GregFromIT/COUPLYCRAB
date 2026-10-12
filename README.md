@@ -30,7 +30,7 @@ Start with `docs/LEARNING.md` for the concepts, `docs/BLOCKERS.md` for what you 
 | M3 sync | `cargo test -p sync` (localhost only) |
 | M4 peer | `cargo build -p peer`, then see "Two peers on one machine" |
 | M5 desktop app | `cd app && npm install && cargo tauri dev` |
-| M5 release | `cd app && cargo tauri build` (not run: disk full, see BLOCKERS.md) |
+| M5 release | `cd app && cargo tauri build` → `target/release/bundle/msi/*.msi`, `target/release/bundle/nsis/*-setup.exe` |
 | M6 Android | not attempted; see `docs/ANDROID.md` |
 
 ## Config
@@ -83,7 +83,7 @@ On each laptop: run the app, fill the first-run screen with that laptop's Tailsc
 
 - **Sync between two real devices over the tailnet.** All sync tests and demos used 127.0.0.1. Untested: MagicDNS resolution for the allowlist, binding to a real 100.x address, DERP-relayed connections, laptops sleeping mid-sync.
 - **Android.** Not built (no SDK/NDK); keep-screen-awake options in `docs/ANDROID.md` are unverified.
-- **`cargo tauri build`** and the Windows installers: disk full (BLOCKERS.md).
+- **Installing from the MSI / NSIS installers.** Both were built, and the release exe was launched once, but neither installer was run.
 - **The desktop UI has no automated test.** It was driven by hand over the WebView2 DevTools protocol once (details in DECISIONS.md, "Desktop app (M5)").
 - **Mixed-version peers.** Schema-evolution rules are followed and the unknown-enum path is unit-tested, but two different builds were never synced against each other.
 - **Large docs.** Nothing tested near the 16 MiB frame limit or the ~10 MB revisit threshold.

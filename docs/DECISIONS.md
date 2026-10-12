@@ -84,7 +84,7 @@ Fitness logs are append-mostly and wouldn't strictly need a CRDT: per-device app
 - **Session logging**: steppers are prefilled from the last set logged for that exercise in this session, else from the template targets. Steps: reps 1, kg 2.5, seconds 5, metres 100. `Distance` exercises log metres only (no time).
 - **Benchmark test value units**: `OneRepMax` kg, `MaxReps` reps, `TimedRun` seconds (lower is better). Optional exercise link for 1RM / max reps; lists are per kind, not per exercise.
 - **Verified on this machine (2026-10-12):** `cargo tauri dev` with a loopback config next to a `peer` on 127.0.0.1. Driven through the WebView2 DevTools protocol (`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`): add todo, add exercises, create template, start session from template (prefill 5 reps / 100 kg), stepper +2.5 kg, log set, finish Partial with note, record beep tests 8.5/8.10/9.1 (listed 9.1, 8.10, 8.5), bad score `8.x` shown as an error. The peer received the sessions and todos; a todo added on the peer appeared in the open app via `doc-changed`. Not committed as an automated test (it needs a GUI session).
-- **`cargo tauri build` not completed**: disk full, see BLOCKERS.md.
+- **`cargo tauri build`** (2026-10-12, after disk space was freed): 3 min release build. Outputs: `target/release/household-app.exe`, `target/release/bundle/msi/Household_0.1.0_x64_en-US.msi` (4.2 MiB), `target/release/bundle/nsis/Household_0.1.0_x64-setup.exe` (2.8 MiB). First run downloaded WiX and NSIS into Tauri's cache. The release exe was launched once: it loads from `http://tauri.localhost/` and the first-run screen rendered via IPC, so the production CSP allows `ipc:`. The first attempt had failed with a full C: drive.
 
 ## Suggested for later
 
