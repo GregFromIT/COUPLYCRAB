@@ -372,3 +372,47 @@ The last two rounds on the 8B model scored 65 and then 63, with only two small c
 **What it says.** An 8B model with tool support is useful for these questions (right tool every time, about 9 in 10 answers right on a small fixed set, ~1.4 s each on this GPU) once the tools do the dates and counting and offer closed sets; a 3B model is not (it picks the wrong tool or arguments about one time in ten and answers about 60 %). So: **use a model of at least this class, and run the eval on the model you pick** (`qwen3:8b` and anything bigger were not measured here).
 
 **Limits of this measurement:** a small seed and 24 questions written by the same author who then tuned the tools on the failures, so the final numbers flatter the tools for questions I did not write; phrase-matching graders; ±3 noise; two models; no `think` setting tried; no long conversations (every question is asked cold).
+
+## Suggested for later (v2)
+
+Not built, either because PLAN-v2 says not to or because it would have been more than the minimum. Listed so they are not forgotten.
+
+**Training (from the plan's "don't build" list):** program *generation* from a questionnaire (it needs curated exercise and volume content we do not have), exercise swap suggestions, importing programs, nutrition, body metrics, progress photos, social features.
+
+**Training (other):**
+- **Edit and delete past sessions, exercises, tests** (API and UI). Fields exist (`deleted`); the endpoints and screens do not.
+- **Finite plates per gym** (a count per plate size) and a plate calculator that respects it; today plates are assumed unlimited.
+- **A per-user strength/endurance profile** so Epley's one curve fits you, and optional fatigue inputs (sleep, soreness). The current engine is deliberately a short, explainable rule (`LEARNING.md` v2.3).
+- **Recommendations for bodyweight movements** (reps-only progression) and for Timed/Distance exercises.
+- **Cache recommendations and analytics** keyed by the fitness document's heads, if reading the whole log on every request ever gets slow.
+- **Sounds for the rest timer** and a notification when the page is hidden (a service worker).
+- **Programs repeating after the mesocycle ends** (today the workouts for days after the last week are "no program is running"), and starting the next mesocycle from the last one.
+
+**Shopping:** per-store aisle order, merging quantities ("2" + "3"), un-deleting a list, a `peer shopping` CLI, a `Last-Event-ID` replay for the event stream instead of "refetch on connect".
+
+**Sync:** a handshake that negotiates which document kinds two peers share, so a v2 host and a v0/v1 peer can coexist without `sync_shopping = false` (`DECISIONS` M4).
+
+**Assistant:**
+- **Write tools with a confirm step** the user clicks (never on the model's say-so alone), starting with "add to the shopping list". The risk analysis is in `LEARNING.md` v2.8.
+- **Streaming answers** (`stream: true`) so a slow model shows progress, and per-conversation storage if wanted (today the chat lives in the browser tab).
+- **A bigger seed and more repeats for the eval,** a per-model temperature, and a regression threshold so a prompt or tool change that makes things worse is caught before it ships.
+- **Check the models' `think` setting** (qwen3 and others spend time reasoning first).
+
+**Platform:** automated browser tests (everything frontend here was driven by hand-written scripts over the Chrome DevTools protocol), moving to a current Node and Vite, and a per-user timezone.
+
+## Wrap-up (v2-M9)
+
+**Milestones, as committed** (`v2-M<n>: ...`; tag `v1` is the starting commit `a035abf`): M0 baseline; M1 training data model and v1 migration; M2 progression engine and analytics; M3 training API and screens (two commits); M4 shopping core, SSE and sync doc kind 3; M5 shopping screen; M6 assistant core; M7 chat endpoint and screen; M8 live eval; M9 this. `cargo test --workspace`: **149 tests pass** (v1 ended at 48). Every milestone also has a browser or live check recorded in its section above.
+
+**Where v2 differs from, or goes beyond, PLAN-v2** (each is explained in the section named):
+- `recommendation_id` is a descriptive string, not a UUID, because recommendations are never stored (M2).
+- Added: `warmups` on programs (M2), `POST /programs/migrate-v1` and `peer fitness migrate-v1` (M1/M3), `GET /assistant/status` and a labelled keyword demo for `--fake-llm` (M7), `PATCH`/`DELETE` for shopping items and lists (M4), the `Todos` screen refreshing live (M5).
+- v1 template, plan and block endpoints return 410 once **any** program exists, from a middleware so even a stale request body gets it (M3).
+- The sync wire format gained a third document kind, which breaks v0/v1 peers; `sync_shopping = false` is the workaround (M4). `peer` became a library plus a binary so the sync-to-browser glue could be tested (M4).
+- Two new direct dependencies, `futures-util` and `reqwest`, both pinned (M4, M6).
+- The assistant's tools were changed after the first live measurement (relative dates, closed sets, counts, hints, a total result budget, a firmer prompt), and the eval's phrase lists were corrected in three places, all disclosed with the numbers before and after (M6, M8).
+- **The plan's default model `qwen3` was not available and not downloaded**; the eval measured the two tool-capable models already on the machine (M8).
+
+**Bugs found by checking, not by reading** (the reason each check was worth doing): a missing `Option` key rule in v1 (earlier); the 410 returning 422 for a stale body (M3 API test); `[object HTMLDivElement]` in the program builder (M3 browser); the chat screen dying with the server (M7 browser); a category that stuck to the next shopping item (M5 browser); "Mon" for "Monday" in the assistant's prompt (M6 test); a tied "most trained muscle" picked arbitrarily (M8 test); the sum of tool results not bounded (found by working the numbers for `LEARNING.md`, then fixed and tested, M8).
+
+**What was not tested** is in `README.md` ("What was not tested") and at the end of each milestone section; the biggest items are real phones, real `tailscale serve` (above all the live-update stream through it), a model other than the two measured, and old v0/v1 builds syncing with a v2 host.
