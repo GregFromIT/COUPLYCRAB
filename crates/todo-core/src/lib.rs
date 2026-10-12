@@ -48,6 +48,28 @@ pub fn valid_date(s: &str) -> bool {
         && num(8..10).is_some_and(|d| (1..=31).contains(&d))
 }
 
+/// The todo filters of `GET /todos`, shared with the assistant: `None`/`all`, `open`, `overdue`
+/// (open and due before `today`), `undated`, `due_between` (open, `from` <= due <= `to`, either
+/// bound optional but not both missing). Dates are `YYYY-MM-DD` strings.
+pub fn filter_todos(todos: Vec<Todo>, filter: Option<&str>, today: &str, from: Option<&str>, to: Option<&str>) -> Result<Vec<Todo>> {
+    let keep: Box<dyn Fn(&Todo) -> bool> = match filter {
+        None | Some("all") => Box::new(|_| true),
+        Some("open") => Box::new(|t| !t.completed),
+        Some("overdue") => Box::new(move |t| !t.completed && t.due.as_deref().is_some_and(|d| d < today)),
+        Some("undated") => Box::new(|t| !t.completed && t.due.is_none()),
+        Some("due_between") => {
+            if from.is_none() && to.is_none() {
+                return Err(Error::Invalid("due_between needs from and/or to".into()));
+            }
+            Box::new(move |t| {
+                !t.completed && t.due.as_deref().is_some_and(|d| from.is_none_or(|f| d >= f) && to.is_none_or(|x| d <= x))
+            })
+        }
+        Some(f) => return Err(Error::Invalid(format!("filter {f:?}: expected open, overdue, undated or due_between"))),
+    };
+    Ok(todos.into_iter().filter(|t| keep(t)).collect())
+}
+
 fn check_due(due: Option<&str>) -> Result<()> {
     match due {
         Some(d) if !valid_date(d) => Err(Error::Invalid(format!("due date {d:?}, expected YYYY-MM-DD"))),

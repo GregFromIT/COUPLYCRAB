@@ -144,24 +144,8 @@ async fn list_todos(State(st): State<AppState>, _me: Me, Query(q): Q) -> ApiResu
     let today = st.today().to_string();
     let todos = st.read_todo(|s| s.list())?;
     let range = |k: &str| q.get(k).map(|v| parse_date(k, v).map(|d| d.to_string())).transpose();
-    let keep: Box<dyn Fn(&Todo) -> bool> = match q.get("filter").map(String::as_str) {
-        None | Some("all") => Box::new(|_| true),
-        Some("open") => Box::new(|t| !t.completed),
-        Some("overdue") => Box::new(move |t| !t.completed && t.due.as_ref().is_some_and(|d| *d < today)),
-        Some("undated") => Box::new(|t| !t.completed && t.due.is_none()),
-        Some("due_between") => {
-            let (from, to) = (range("from")?, range("to")?);
-            if from.is_none() && to.is_none() {
-                return Err(ApiError::bad("due_between needs from and/or to"));
-            }
-            Box::new(move |t| {
-                !t.completed
-                    && t.due.as_ref().is_some_and(|d| from.as_ref().is_none_or(|f| d >= f) && to.as_ref().is_none_or(|x| d <= x))
-            })
-        }
-        Some(f) => return Err(ApiError::bad(format!("filter {f:?}: expected open, overdue, undated or due_between"))),
-    };
-    Ok(Json(todos.into_iter().filter(|t| keep(t)).collect()))
+    let (from, to) = (range("from")?, range("to")?);
+    Ok(Json(todo_core::filter_todos(todos, q.get("filter").map(String::as_str), &today, from.as_deref(), to.as_deref())?))
 }
 
 #[derive(Deserialize)]
