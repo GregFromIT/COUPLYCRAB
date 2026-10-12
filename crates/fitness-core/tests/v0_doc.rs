@@ -24,10 +24,14 @@ fn v0_doc_loads_in_v1() {
     assert_eq!((sess.block_id.clone(), sess.slot.clone(), sess.label.clone()), (None, None, None), "new v1 fields are None");
     assert_eq!(s.list_tests(&TestKind::BeepTest).unwrap()[0].beep.unwrap().to_string(), "8.10");
 
-    // Upgrading only added the shared schema-2 init change; no v0 change was rewritten.
-    assert_eq!(s.schema_version().unwrap(), Some(2));
+    // Upgrading only added the shared schema-2 and schema-3 init changes; no v0 change was rewritten.
+    assert_eq!(s.schema_version().unwrap(), Some(3));
     assert!(v0_heads.iter().all(|h| s.doc.get_change_by_hash(h).is_some()));
-    assert_eq!(s.doc.get_changes(&v0_heads).len(), 1);
+    assert_eq!(s.doc.get_changes(&v0_heads).len(), 2);
+    assert!(s.list_programs().unwrap().is_empty());
+    let e = &s.list_exercises().unwrap()[0];
+    assert_eq!((e.primary_muscles.len(), e.equipment.clone(), e.default_rest_s), (0, None, None), "schema-3 fields are empty");
+    assert_eq!(sess.sets.values().next().unwrap().kind, None);
     assert!(s.list_blocks().unwrap().is_empty());
     assert_eq!(s.get_plan("alice").unwrap(), None);
 }

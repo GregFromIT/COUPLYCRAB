@@ -4,7 +4,8 @@
 //! `{ schema_version, exercises: {id: Exercise}, templates: {id: Template},
 //!    sessions: {id: Session}, tests: {id: TestResult},
 //!    plans: {user_id: WeeklyPlan}, blocks: {id: Block},            (schema 2)
-//!    external_activities: {"source:source_id": ExternalActivity} }` (schema 2)
+//!    external_activities: {"source:source_id": ExternalActivity},   (schema 2)
+//!    programs: {id: Program}, gym_profiles: {id: GymProfile} }`       (schema 3, v2)
 //! Template items and session sets are maps keyed by ID with an explicit `index`.
 
 mod plan;
@@ -20,7 +21,9 @@ pub use automerge::Automerge;
 
 /// 1: v0. 2: v1 adds `plans`, `blocks`, `external_activities`, template item
 /// `progression`, session `block_id`/`block_week`/`slot`/`label`.
-pub const SCHEMA_VERSION: u64 = 2;
+/// 3: v2 adds `programs`, `gym_profiles`, exercise muscles/equipment/rest, set
+/// `kind`/`rir`/`partials`/`rest_taken_s`/`recommendation_id`, session `program_id`/`workout_id`.
+pub const SCHEMA_VERSION: u64 = 3;
 
 /// String-backed enums: unknown strings (from newer builds) hydrate to
 /// `Unknown(s)` and are written back unchanged, instead of failing.
@@ -67,6 +70,11 @@ string_enum!(MeasurementType { WeightReps, Reps, Timed, Distance });
 string_enum!(SessionStatus { InProgress, Completed, Partial });
 string_enum!(TestKind { BeepTest, OneRepMax, MaxReps, TimedRun });
 string_enum!(ProgressionKind { LinearLoad, LinearReps });
+
+mod migrate;
+mod program;
+pub use migrate::Migration;
+pub use program::{Equipment, GymProfile, Program, ProgramItem, ProgramWorkout, SetKind, SetStyle, WeekOverride, MUSCLES};
 
 /// Shuttles per level, levels 1..=21, of the common 20 m beep test (level 1 at
 /// 8.0 km/h). Source: https://www.topendsports.com/testing/beep-table.htm
@@ -116,6 +124,31 @@ pub struct Exercise {
     /// e.g. `2:1`.
     pub tempo: Option<String>,
     pub deleted: bool,
+    /// Schema 3 (absent in older docs, hence `missing`). `MUSCLES` values.
+    #[autosurgeon(missing = "Default::default")]
+    pub primary_muscles: Vec<String>,
+    #[autosurgeon(missing = "Default::default")]
+    pub secondary_muscles: Vec<String>,
+    #[autosurgeon(missing = "Default::default")]
+    pub equipment: Option<Equipment>,
+    #[autosurgeon(missing = "Default::default")]
+    pub default_rest_s: Option<u32>,
+}
+
+impl Exercise {
+    pub fn new(id: String, name: &str, measurement: MeasurementType) -> Self {
+        Exercise {
+            id,
+            name: name.into(),
+            measurement,
+            tempo: None,
+            deleted: false,
+            primary_muscles: vec![],
+            secondary_muscles: vec![],
+            equipment: None,
+            default_rest_s: None,
+        }
+    }
 }
 
 /// `LinearLoad`: `per_week` kg added per non-deload week.
@@ -189,13 +222,25 @@ pub struct SetLog {
     pub load: Option<f64>,
     pub duration_s: Option<u32>,
     pub distance_m: Option<f64>,
+    /// Schema 3 (absent in older docs, hence `missing`).
+    #[autosurgeon(missing = "Default::default")]
+    pub kind: Option<SetKind>,
+    #[autosurgeon(missing = "Default::default")]
+    pub rir: Option<u8>,
+    #[autosurgeon(missing = "Default::default")]
+    pub partials: Option<u8>,
+    #[autosurgeon(missing = "Default::default")]
+    pub rest_taken_s: Option<u32>,
+    /// ID of the recommendation shown when the set was logged (`recommendations` are derived, not stored).
+    #[autosurgeon(missing = "Default::default")]
+    pub recommendation_id: Option<String>,
 }
 
 impl SetLog {
     /// Same logged values, ignoring the server-assigned `index`.
     fn same(&self, o: &SetLog) -> bool {
-        (&self.exercise_id, self.reps, self.load, self.duration_s, self.distance_m)
-            == (&o.exercise_id, o.reps, o.load, o.duration_s, o.distance_m)
+        (&self.exercise_id, self.reps, self.load, self.duration_s, self.distance_m, &self.kind, self.rir, self.partials, self.rest_taken_s, &self.recommendation_id)
+            == (&o.exercise_id, o.reps, o.load, o.duration_s, o.distance_m, &o.kind, o.rir, o.partials, o.rest_taken_s, &o.recommendation_id)
     }
 }
 
@@ -223,6 +268,11 @@ pub struct Session {
     /// Schema 2: label of an external session (e.g. "Unit PT") logged as attended.
     #[autosurgeon(missing = "Default::default")]
     pub label: Option<String>,
+    /// Schema 3: the program and workout this session was started from.
+    #[autosurgeon(missing = "Default::default")]
+    pub program_id: Option<String>,
+    #[autosurgeon(missing = "Default::default")]
+    pub workout_id: Option<String>,
 }
 
 impl Session {
@@ -248,6 +298,8 @@ impl Session {
             block_week: None,
             slot: None,
             label: None,
+            program_id: None,
+            workout_id: None,
         }
     }
 }
@@ -421,10 +473,27 @@ pub trait FitnessStore {
     /// Insert or replace by `(source, source_id)`.
     fn upsert_external(&mut self, a: ExternalActivity) -> Result<Write>;
 
+    /// A user's profiles, default first then by name.
+    fn list_gym_profiles(&self, user_id: &str) -> Result<Vec<GymProfile>>;
+    fn get_gym_profile(&self, id: &str) -> Result<GymProfile>;
+    fn put_gym_profile(&mut self, g: GymProfile) -> Result<Write>;
+    /// Replaces; setting `is_default` clears it on the user's other profiles.
+    fn update_gym_profile(&mut self, g: GymProfile) -> Result<()>;
+
+    /// All users' programs, by start date.
+    fn list_programs(&self) -> Result<Vec<Program>>;
+    fn get_program(&self, id: &str) -> Result<Program>;
+    fn put_program(&mut self, p: Program) -> Result<Write>;
+    fn update_program(&mut self, p: Program) -> Result<()>;
+
+    /// Turns each v1 block (with its owner's plan and templates) into a Program
+    /// with ID `v1-<block id>`. Idempotent; an existing program is never overwritten.
+    fn migrate_v1_blocks(&mut self) -> Result<Migration>;
+
     // ---- v0 conveniences: the store generates the ID ----
 
     fn add_exercise(&mut self, name: &str, measurement: MeasurementType, tempo: Option<&str>) -> Result<Exercise> {
-        let e = Exercise { id: new_id(), name: name.into(), measurement, tempo: tempo.map(Into::into), deleted: false };
+        let e = Exercise { tempo: tempo.map(Into::into), ..Exercise::new(new_id(), name, measurement) };
         self.put_exercise(e.clone())?;
         Ok(e)
     }
@@ -469,8 +538,9 @@ impl AsMut<Automerge> for AmFitnessStore {
 /// the collection maps have the same object IDs everywhere.
 ///
 /// Change 1 is byte-for-byte v0's init (schema 1). Change 2 (schema 2) adds the
-/// v1 collections; it's also deterministic (same actor, seq 2, time 0, deps =
-/// change 1), so a v0 doc that merges it and a fresh v1 doc agree on the maps.
+/// v1 collections; change 3 (schema 3) adds the v2 ones. Each is deterministic
+/// (same actor, next seq, time 0, deps = the previous change), so an older doc
+/// that merges them and a fresh doc agree on the maps.
 pub fn init_doc() -> Automerge {
     use automerge::transaction::Transactable;
     let mut doc = Automerge::new().with_actor(ActorId::from([0u8; 16]));
@@ -486,6 +556,14 @@ pub fn init_doc() -> Automerge {
     doc.transact_with::<_, _, AutomergeError, _>(opts, |tx| {
         tx.put(ROOT, "schema_version", 2u64)?;
         for c in ["plans", "blocks", "external_activities"] {
+            tx.put_object(ROOT, c, ObjType::Map)?;
+        }
+        Ok(())
+    })
+    .expect("init on fresh doc cannot fail");
+    doc.transact_with::<_, _, AutomergeError, _>(opts, |tx| {
+        tx.put(ROOT, "schema_version", 3u64)?;
+        for c in ["programs", "gym_profiles"] {
             tx.put_object(ROOT, c, ObjType::Map)?;
         }
         Ok(())
@@ -573,6 +651,28 @@ impl AmFitnessStore {
         Ok(hydrate_prop(&self.doc, ROOT, coll)?)
     }
 
+    fn clear_other_defaults(&mut self, keep: &GymProfile) -> Result<()> {
+        for other in self.list_gym_profiles(&keep.user_id)? {
+            if other.id != keep.id && other.is_default {
+                self.put("gym_profiles", &other.id.clone(), &GymProfile { is_default: false, ..other })?;
+            }
+        }
+        Ok(())
+    }
+
+    fn check_program(&self, p: &Program) -> Result<()> {
+        program::validate_program(p)?;
+        if let Some(g) = &p.gym_profile_id {
+            if self.get_gym_profile(g)?.user_id != p.user_id {
+                return Err(Error::NotOwner);
+            }
+        }
+        for it in p.workouts.values().flat_map(|w| w.items.values()) {
+            self.get_exercise(&it.exercise_id)?;
+        }
+        Ok(())
+    }
+
     fn owned_session(&self, user_id: &str, session_id: &str) -> Result<Session> {
         let s: Session = self.get("sessions", session_id)?;
         if s.user_id != user_id {
@@ -586,6 +686,15 @@ impl Default for AmFitnessStore {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn validate_exercise(e: &Exercise) -> Result<()> {
+    for m in e.primary_muscles.iter().chain(&e.secondary_muscles) {
+        if !MUSCLES.contains(&m.as_str()) {
+            return Err(Error::Invalid(format!("muscle {m:?}, expected one of {}", MUSCLES.join(", "))));
+        }
+    }
+    Ok(())
 }
 
 fn validate_template(t: &Template) -> Result<()> {
@@ -655,10 +764,12 @@ impl FitnessStore for AmFitnessStore {
     }
 
     fn put_exercise(&mut self, e: Exercise) -> Result<Write> {
+        validate_exercise(&e)?;
         self.create("exercises", &e.id.clone(), &e, |a, b| a == b)
     }
 
     fn update_exercise(&mut self, e: Exercise) -> Result<()> {
+        validate_exercise(&e)?;
         self.update("exercises", &e.id.clone(), &e)
     }
 
@@ -755,7 +866,14 @@ impl FitnessStore for AmFitnessStore {
                 return Err(Error::NotOwner);
             }
         }
-        let key = |s: &Session| (s.user_id.clone(), s.template_id.clone(), s.block_id.clone(), s.block_week, s.slot.clone(), s.label.clone());
+        if let Some(p) = &s.program_id {
+            if self.get_program(p)?.user_id != s.user_id {
+                return Err(Error::NotOwner);
+            }
+        }
+        let key = |s: &Session| {
+            (s.user_id.clone(), s.template_id.clone(), s.block_id.clone(), s.block_week, s.slot.clone(), s.label.clone(), s.program_id.clone(), s.workout_id.clone())
+        };
         self.create("sessions", &s.id.clone(), &s, |a, b| key(a) == key(b))
     }
 
@@ -799,6 +917,74 @@ impl FitnessStore for AmFitnessStore {
         validate_test(&mut r)?;
         r.deleted = false;
         self.create("tests", &r.id.clone(), &r, |a, b| a == b)
+    }
+
+    fn list_gym_profiles(&self, user_id: &str) -> Result<Vec<GymProfile>> {
+        let mut v: Vec<_> = self.all_of::<GymProfile>("gym_profiles")?.into_values().filter(|g| !g.deleted && g.user_id == user_id).collect();
+        v.sort_by(|a, b| (!a.is_default, a.name.to_lowercase(), &a.id).cmp(&(!b.is_default, b.name.to_lowercase(), &b.id)));
+        Ok(v)
+    }
+
+    fn get_gym_profile(&self, id: &str) -> Result<GymProfile> {
+        self.get("gym_profiles", id)
+    }
+
+    fn put_gym_profile(&mut self, g: GymProfile) -> Result<Write> {
+        program::validate_gym(&g)?;
+        let w = self.create("gym_profiles", &g.id.clone(), &g, |a, b| a == b)?;
+        if w == Write::Created && g.is_default {
+            self.clear_other_defaults(&g)?;
+        }
+        Ok(w)
+    }
+
+    fn update_gym_profile(&mut self, g: GymProfile) -> Result<()> {
+        program::validate_gym(&g)?;
+        self.update("gym_profiles", &g.id.clone(), &g)?;
+        if g.is_default {
+            self.clear_other_defaults(&g)?;
+        }
+        Ok(())
+    }
+
+    fn list_programs(&self) -> Result<Vec<Program>> {
+        let mut v: Vec<_> = self.all_of::<Program>("programs")?.into_values().filter(|p| !p.deleted).collect();
+        v.sort_by(|a, b| (&a.start_date, &a.id).cmp(&(&b.start_date, &b.id)));
+        Ok(v)
+    }
+
+    fn get_program(&self, id: &str) -> Result<Program> {
+        self.get("programs", id)
+    }
+
+    fn put_program(&mut self, p: Program) -> Result<Write> {
+        self.check_program(&p)?;
+        self.create("programs", &p.id.clone(), &p, |a, b| a == b)
+    }
+
+    fn update_program(&mut self, p: Program) -> Result<()> {
+        self.check_program(&p)?;
+        self.update("programs", &p.id.clone(), &p)
+    }
+
+    fn migrate_v1_blocks(&mut self) -> Result<Migration> {
+        let (programs, mut notes) = migrate::v1_to_programs(
+            &self.list_blocks()?,
+            &self.all_of::<WeeklyPlan>("plans")?,
+            &self.all_of::<Template>("templates")?,
+        );
+        let mut created = 0;
+        for p in programs {
+            if self.find::<Program>("programs", &p.id)?.is_some() {
+                continue;
+            }
+            let from = p.migrated_from.clone();
+            self.put_program(p).map_err(|e| Error::Invalid(format!("migrating block {from:?}: {e}")))?;
+            created += 1;
+        }
+        notes.sort();
+        notes.dedup();
+        Ok(Migration { created, notes })
     }
 
     fn upsert_external(&mut self, a: ExternalActivity) -> Result<Write> {
@@ -961,7 +1147,7 @@ mod tests {
     #[test]
     fn put_is_idempotent_and_conflicts_on_different_content() {
         let mut s = AmFitnessStore::new();
-        let e = Exercise { id: "e1".into(), name: "Row".into(), measurement: MeasurementType::Reps, tempo: None, deleted: false };
+        let e = Exercise::new("e1".into(), "Row", MeasurementType::Reps);
         assert_eq!(s.put_exercise(e.clone()).unwrap(), Write::Created);
         let heads = s.doc.get_heads();
         assert_eq!(s.put_exercise(e.clone()).unwrap(), Write::Unchanged);

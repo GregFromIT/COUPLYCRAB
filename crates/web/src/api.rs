@@ -225,7 +225,7 @@ fn check_exercise(e: &Exercise) -> ApiResult<()> {
 
 async fn put_exercise(State(st): State<AppState>, _me: Me, Path(id): Path<String>, Body(b): Body<ExerciseIn>) -> ApiResult<Response> {
     check_id(&id)?;
-    let e = Exercise { id, name: b.name, measurement: b.measurement, tempo: b.tempo, deleted: false };
+    let e = Exercise { tempo: b.tempo, ..Exercise::new(id, &b.name, b.measurement) };
     check_exercise(&e)?;
     let w = st.write_fit(|s| s.put_exercise(e.clone()))?;
     Ok(created(w == Write::Created, e))

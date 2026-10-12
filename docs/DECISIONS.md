@@ -195,3 +195,20 @@ Not built (PLAN-v1 says minimal); listed so they aren't forgotten.
 - **`spawn_blocking` for saves** if writes ever feel slow (`ponytail:` in `crates/peer/src/main.rs`).
 - **A schema-evolution test for the reverse direction**: a v1 doc opened by the v0 build. Expected to work (v0 ignores unknown keys), but only reasoned, not tested.
 - **Automated browser test** for the frontend (the M3/M4 checks were scripted by hand over CDP).
+
+## Baseline (v2-M0, 2026-10-12)
+
+- Tagged `v1` at `a035abf` (the last v1 commit). `cargo test --workspace`: 48 passed. PLAN-v2.md saved verbatim and committed. Blockers carry forward (Node 16 EOL, Android SDK); v2 owner steps for Ollama are added in M8/M9.
+
+## Training model (v2-M1)
+
+- **Schema 3 = a third deterministic init change** (same actor, seq 3, time 0, deps = change 2) adding `programs` and `gym_profiles`. Same mechanism as v1's schema 2: a v0 or v1 doc merges it and agrees with a fresh doc on the map object IDs. Checked by `tests/v1_doc.rs` (`v1_doc_and_fresh_v2_device_converge`) and the updated `tests/v0_doc.rs` (a v0 doc now gains 2 init changes, was 1).
+- **Every new field on an existing type carries `#[autosurgeon(missing = "Default::default")]`** (exercise muscles/equipment/rest, set `kind`/`rir`/`partials`/`rest_taken_s`/`recommendation_id`, session `program_id`/`workout_id`), per the v1 finding that autosurgeon errors on a missing key even for `Option`. `v1_doc_loads_in_v2` is the test that would catch a forgotten one.
+- **New types** in `crates/fitness-core/src/program.rs`: `GymProfile`, `Program`, `ProgramWorkout`, `ProgramItem`, `WeekOverride`, enums `Equipment`, `SetStyle`, `SetKind` (same `Unknown(String)` round-trip as the v0/v1 enums). Muscles are strings validated against the fixed `MUSCLES` list rather than an enum, so the list can grow without a schema change.
+- **Periodization is a flat map** `overrides` keyed `"{week}:{item_id}"`, each override changing `sets` / rep range / `rir` for one item in one week (`None` keeps the item's value). Flat, because nested maps of maps are awkward to reconcile and a per-item-per-week table is exactly what the builder screen edits.
+- **Plates are unlimited per side.** `GymProfile.plates_kg` lists plate weights; there's no count per weight. A real rack has finite plates, but modelling counts adds a field and rounding branch for a case two home users rarely hit. Revisit if a plate calculator suggests a load the gym can't build.
+- **External sessions stay as workouts with `external_label`** and no items (slot required), matching the v1 plan slot.
+- **Migration (`migrate_v1_blocks`)**: one Program per non-deleted v1 block, ID `v1-<block id>`, using the owner's weekly plan and templates. Item and workout IDs are derived (`<slot>` / `<slot>-<n>`), so two devices migrating produce identical programs (tested) and re-running writes nothing (tested). An existing program is never overwritten, so edits survive a re-run. Mapping: reps `r` → `(r, r)` (8 if the template had none, noted); RIR 2; `Straight`; rest carried over; v1 deload week → override with half the sets (rounded up) at RIR 4. **Dropped and reported in `Migration.notes`:** linear progression, fixed target loads (v2 recommends loads from history), and the deload load percentage. v1 data stays in the doc, unwritten. Past v1 sessions keep their `block_id` and are not re-linked to programs.
+- **Migration is a store method, not run automatically.** Nothing calls it yet; M3 decides when (planned: explicit `POST /programs/migrate-v1`, and the v1 template/plan/block endpoints return 410 once programs exist).
+- **v1 fixture** `tests/fixtures/fitness-v1.automerge` was produced by the v1 code (tag `v1`) with a throwaway test, then the generator was deleted, same as v0's fixture.
+- **Tests:** 9 new in `tests/v1_doc.rs` (57 workspace tests in total).
