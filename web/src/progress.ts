@@ -37,7 +37,7 @@ async function volumeSection() {
   if (!ui.volumeMuscle) ui.volumeMuscle = [...MUSCLE_ORDER].sort((a, b) => total(b) - total(a))[0];
   const max = Math.max(10, ...MUSCLE_ORDER.map((m) => cur.sets[m]));
   const rows = MUSCLE_ORDER.map((m) => h("button", {
-    class: `barrow${m === ui.volumeMuscle ? " sel" : ""}`, "aria-pressed": m === ui.volumeMuscle, onclick: () => { ui.volumeMuscle = m; render(); },
+    class: `barrow${m === ui.volumeMuscle ? " sel" : ""}`, "aria-pressed": String(m === ui.volumeMuscle), onclick: () => { ui.volumeMuscle = m; render(); },
   }, h("span", {}, m), h("span", { class: "bartrack" }, h("span", { class: "bar", style: `width:${(cur.sets[m] / max) * 100}%` })), h("span", { class: "barval" }, kg(cur.sets[m]))));
   return h("div", {},
     h("p", { class: "muted" }, `Sets this week (from ${cur.week_start}). A primary muscle counts 1 per set, a secondary 0.5. Tap a muscle for its last 8 weeks.`),

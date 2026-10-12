@@ -82,6 +82,16 @@ export const api = {
   putSet: (sessionId: string, setId: string, set: Record<string, unknown>) => req<any>("PUT", `/sessions/${sessionId}/sets/${setId}`, set),
   finish: (sessionId: string, status: string, note: string | null) => req<any>("POST", `/sessions/${sessionId}/finish`, { status, note }),
 
+  lists: () => req<any[]>("GET", "/lists"),
+  putList: (id: string, name: string) => req<any>("PUT", `/lists/${id}`, { name }),
+  patchList: (id: string, body: Record<string, unknown>) => req<any>("PATCH", `/lists/${id}`, body),
+  listItems: (listId: string) => req<any[]>("GET", `/lists/${listId}/items`),
+  putItem: (listId: string, id: string, item: Record<string, unknown>) => req<any>("PUT", `/lists/${listId}/items/${id}`, item),
+  patchItem: (listId: string, id: string, body: Record<string, unknown>) => req<any>("PATCH", `/lists/${listId}/items/${id}`, body),
+  deleteItem: (listId: string, id: string) => req<void>("DELETE", `/lists/${listId}/items/${id}`),
+  clearChecked: (listId: string) => req<{ cleared: number }>("POST", `/lists/${listId}/clear-checked`),
+  suggestions: (listId: string, text: string) => req<string[]>("GET", `/lists/${listId}/suggestions${q({ q: text })}`),
+
   tests: (kind: string) => req<any[]>("GET", `/tests${q({ kind })}`),
   putTest: (id: string, t: Record<string, unknown>) => req<any>("PUT", `/tests/${id}`, t),
 };

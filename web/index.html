@@ -58,6 +58,13 @@
       .bartrack { height: 12px; background: var(--line); border-radius: 6px; overflow: hidden; display: block; }
       .bar { display: block; height: 100%; background: var(--accent); }
       .barval { text-align: right; }
+      .item-row { flex-direction: row; align-items: center; gap: 10px; padding: 8px 12px; margin: 4px 0; }
+      .item-row .name { font-size: 18px; }
+      .item-row.ticked .name { text-decoration: line-through; color: var(--muted); }
+      .item-row.busy { opacity: 0.5; }
+      button.tick { min-width: 64px; min-height: 64px; font-size: 30px; line-height: 1; padding: 0; }
+      .item-row.ticked button.tick { color: var(--ok); border-color: var(--ok); }
+      h3.cat { margin: 14px 0 2px; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
       #rest { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; display: flex; gap: 8px; align-items: center; padding: 10px 16px; background: var(--bg); border-top: 3px solid var(--accent); font-size: 18px; font-variant-numeric: tabular-nums; }
       #rest[hidden] { display: none; }
       #rest.over { border-top-color: var(--ok); color: var(--ok); }

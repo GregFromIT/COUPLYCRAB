@@ -55,16 +55,17 @@ export const clearError = () => errorBox.replaceChildren();
 
 /** Run a write. On success re-render. On failure leave the screen as is (entered
  * values stay) and offer Retry, which re-sends the exact same request: same
- * client ID, same values. Writes are idempotent, so a retry can't duplicate. */
-export async function run(fn: () => Promise<unknown>) {
+ * client ID, same values. Writes are idempotent, so a retry can't duplicate.
+ * `after` defaults to re-rendering everything; a screen that updates in place passes its own. */
+export async function run(fn: () => Promise<unknown>, after: () => Promise<unknown> = render) {
   clearError();
   try {
     await fn();
   } catch (e) {
-    showError(e, () => run(fn));
+    showError(e, () => run(fn, after));
     return;
   }
-  await render();
+  await after();
 }
 
 // ---- wake lock (Log Workout) ----
