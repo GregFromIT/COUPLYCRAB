@@ -1,0 +1,33 @@
+# Example systemd unit for an always-on Linux host (e.g. a Raspberry Pi).
+# Not installed by anything in this repo. To use (as root):
+#   useradd --system --home /var/lib/household --create-home household
+#   install -m 755 peer /usr/local/bin/peer
+#   install -m 600 -o household config.toml /var/lib/household/config.toml
+#   cp peer.service /etc/systemd/system/ && systemctl daemon-reload
+#   systemctl enable --now peer
+#   journalctl -u peer -f        # logs
+# Unit options: https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html
+# Sandboxing:   https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html
+
+[Unit]
+Description=Household organiser (sync peer + web app)
+# The v0 sync listener binds the Tailscale IP, which exists only once tailscaled is up.
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+User=household
+ExecStart=/usr/local/bin/peer serve --config /var/lib/household/config.toml
+# Also covers boot races: if the Tailscale IP isn't assigned yet, bind fails and we retry.
+Restart=on-failure
+RestartSec=5
+
+# The process only needs its data dir.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/household
+
+[Install]
+WantedBy=multi-user.target
