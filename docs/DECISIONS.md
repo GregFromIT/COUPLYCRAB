@@ -70,6 +70,22 @@ Fitness logs are append-mostly and wouldn't strictly need a CRDT: per-device app
 - **No logging crate:** connection errors go to stderr with `eprintln!`.
 - **No `catch_unwind` around Automerge.** If automerge itself panicked on hostile input, the doc mutex would be poisoned and that doc's sync would stop with an error rather than continue on a half-applied doc. Not observed in tests.
 
+## Desktop app (M5)
+
+- **Scaffolded with `cargo tauri init --ci`** (https://v2.tauri.app/reference/cli/#init), then trimmed: removed the template's `tauri-plugin-log` / `log` (unused), crate renamed `household-app`, identifier `local.household.organiser`. `app/src-tauri` is a workspace member, so it shares the pinned versions and `Cargo.lock`. Debug builds don't need `app/dist` (they load `devUrl`), so `cargo test --workspace` works on a fresh clone without npm (checked).
+- **Pins:** `tauri =2.12.3`, `tauri-build =2.7.2`, `serde_json =1.0.154` (newest 2.x on crates.io on 2026-10-12; `3.0.0-alpha` exists and was skipped).
+- **No `@tauri-apps/api` npm package.** `app.withGlobalTauri: true` exposes `window.__TAURI__.core.invoke` and `window.__TAURI__.event.listen` (https://v2.tauri.app/reference/config/#withglobaltauri). One less dependency to pin against Node 16.
+- **No `typescript` npm package.** Vite strips TS types with esbuild without type-checking (https://v4.vitejs.dev/guide/features.html#typescript). The code was type-checked once with `npx -p typescript@5.9.3 tsc --noEmit --strict --target es2021 --lib es2021,dom src/main.ts` (clean). Add `typescript` as a devDependency if you want `npm run check` in CI.
+- **CSP:** `default-src 'self'; connect-src 'self' ipc: http://ipc.localhost ws://localhost:1420; style-src 'self' 'unsafe-inline'` (https://v2.tauri.app/security/csp/). All peer data is rendered via `textContent`, never `innerHTML`, since it's untrusted.
+- **Core types derive `serde::Serialize`** (and `Deserialize` for command inputs `SetLog`, `NewTemplateItem`) so commands can return them directly. The cores now depend on `serde` but still not on Tauri or each other. String enums (de)serialize as their string, keeping `Unknown(s)` round-trippable.
+- **Commands** (`app/src-tauri/src/lib.rs`): each wraps one store method. `App::write` locks the store, runs the op, `persist::save`s, then calls `SyncNode::local_change()`. Remote changes are persisted and emitted as a `doc-changed` event; the UI re-renders, unless an input has focus, in which case it re-renders when focus leaves.
+- **Owner-only edits** are enforced in `FitnessStore` (`log_set` / `finish_session` take `user_id` and return `NotOwner`). The UI only offers to continue *your* in-progress session; others' sessions are read-only in "Recent sessions".
+- **First-run screen** writes `config.toml` once. Changing it later means editing the file and restarting (no settings screen in v0). If binding fails (e.g. Tailscale not up yet), the status line shows `sync stopped: …`; restart the app to retry.
+- **Session logging**: steppers are prefilled from the last set logged for that exercise in this session, else from the template targets. Steps: reps 1, kg 2.5, seconds 5, metres 100. `Distance` exercises log metres only (no time).
+- **Benchmark test value units**: `OneRepMax` kg, `MaxReps` reps, `TimedRun` seconds (lower is better). Optional exercise link for 1RM / max reps; lists are per kind, not per exercise.
+- **Verified on this machine (2026-10-12):** `cargo tauri dev` with a loopback config next to a `peer` on 127.0.0.1. Driven through the WebView2 DevTools protocol (`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`): add todo, add exercises, create template, start session from template (prefill 5 reps / 100 kg), stepper +2.5 kg, log set, finish Partial with note, record beep tests 8.5/8.10/9.1 (listed 9.1, 8.10, 8.5), bad score `8.x` shown as an error. The peer received the sessions and todos; a todo added on the peer appeared in the open app via `doc-changed`. Not committed as an automated test (it needs a GUI session).
+- **`cargo tauri build` not completed**: disk full, see BLOCKERS.md.
+
 ## Suggested for later
 
 - (filled in as the run goes)

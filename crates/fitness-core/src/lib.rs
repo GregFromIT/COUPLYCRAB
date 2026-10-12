@@ -36,6 +36,16 @@ macro_rules! string_enum {
                 r.str(self.as_str())
             }
         }
+        impl serde::Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+                s.serialize_str(self.as_str())
+            }
+        }
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+                Ok(String::deserialize(d)?.parse().unwrap())
+            }
+        }
         impl Hydrate for $name {
             fn hydrate_string(s: &str) -> std::result::Result<Self, HydrateError> {
                 Ok(s.parse().unwrap())
@@ -50,7 +60,7 @@ string_enum!(TestKind { BeepTest, OneRepMax, MaxReps, TimedRun });
 
 /// Beep test score. Derived `Ord` compares level then shuttle, so 8.10 > 8.5.
 /// Never a float: as a float 8.10 == 8.1 < 8.5.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Reconcile, Hydrate)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Reconcile, Hydrate, serde::Serialize)]
 pub struct BeepScore {
     pub level: u8,
     pub shuttle: u8,
@@ -71,7 +81,7 @@ impl FromStr for BeepScore {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Reconcile, Hydrate)]
+#[derive(Debug, Clone, PartialEq, Reconcile, Hydrate, serde::Serialize)]
 pub struct Exercise {
     pub id: String,
     pub name: String,
@@ -81,7 +91,7 @@ pub struct Exercise {
     pub deleted: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Reconcile, Hydrate)]
+#[derive(Debug, Clone, PartialEq, Reconcile, Hydrate, serde::Serialize)]
 pub struct TemplateItem {
     pub index: u32,
     pub exercise_id: String,
@@ -93,7 +103,7 @@ pub struct TemplateItem {
     pub rest_s: Option<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Reconcile, Hydrate)]
+#[derive(Debug, Clone, PartialEq, Reconcile, Hydrate, serde::Serialize)]
 pub struct Template {
     pub id: String,
     pub name: String,
@@ -111,7 +121,8 @@ impl Template {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Default, Reconcile, Hydrate)]
+#[derive(Debug, Clone, PartialEq, Default, Reconcile, Hydrate, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct SetLog {
     pub index: u32,
     pub exercise_id: String,
@@ -122,7 +133,7 @@ pub struct SetLog {
     pub distance_m: Option<f64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Reconcile, Hydrate)]
+#[derive(Debug, Clone, PartialEq, Reconcile, Hydrate, serde::Serialize)]
 pub struct Session {
     pub id: String,
     pub user_id: String,
@@ -144,7 +155,7 @@ impl Session {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Reconcile, Hydrate)]
+#[derive(Debug, Clone, PartialEq, Reconcile, Hydrate, serde::Serialize)]
 pub struct TestResult {
     pub id: String,
     pub user_id: String,
@@ -196,7 +207,7 @@ from_err!(AutomergeError, HydrateError, autosurgeon::ReconcileError);
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Template item as entered by the user (ID and index are assigned by the store).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 pub struct NewTemplateItem {
     pub exercise_id: String,
     pub target_sets: u32,

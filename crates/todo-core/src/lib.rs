@@ -11,7 +11,7 @@ pub use automerge::Automerge;
 
 pub const SCHEMA_VERSION: u64 = 1;
 
-#[derive(Debug, Clone, PartialEq, Reconcile, Hydrate)]
+#[derive(Debug, Clone, PartialEq, Reconcile, Hydrate, serde::Serialize)]
 pub struct Todo {
     pub id: String,
     pub title: String,

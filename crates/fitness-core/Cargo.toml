@@ -7,3 +7,4 @@ edition = "2024"
 automerge.workspace = true
 autosurgeon.workspace = true
 uuid.workspace = true
+serde.workspace = true
