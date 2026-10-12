@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["crates/sync", "crates/todo-core", "crates/fitness-core", "crates/peer"]
+
+[workspace.dependencies]
+automerge = "=0.12.0"
+autosurgeon = "=0.14.0"
+uuid = { version = "=1.28.0", features = ["v7", "v4"] }
+tokio = { version = "=1.53.2", features = ["net", "io-util", "rt-multi-thread", "macros", "sync", "time"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+toml = "=1.1.8"
