@@ -93,3 +93,43 @@ Each section: what it is, why this project needs it, where it lives, source.
 **Not done in v0:** application-level peer authentication (e.g. a shared key). Any device on your tailnet whose IP matches a configured peer name is trusted.
 
 **Sources:** https://tailscale.com/blog/how-tailscale-works, https://tailscale.com/kb/1232/derp-servers, https://tailscale.com/kb/1081/magicdns
+
+## Try it yourself: two peers on one machine
+
+Each peer needs its own data dir and port. From the repo root (the `data-*` dirs are gitignored):
+
+```sh
+cargo build -p peer
+mkdir data-a data-b
+```
+
+`data-a/config.toml`:
+```toml
+user_id = "alice"
+device_name = "peer-a"
+listen_ip = "127.0.0.1"
+listen_port = 7421
+peers = ["127.0.0.1:7422"]
+```
+
+`data-b/config.toml`:
+```toml
+user_id = "bob"
+device_name = "peer-b"
+listen_ip = "127.0.0.1"
+listen_port = 7422
+peers = ["127.0.0.1:7421"]
+```
+
+Terminal 1: `target/debug/peer run --config data-a/config.toml`
+Terminal 2: `target/debug/peer run --config data-b/config.toml`
+Terminal 3: `target/debug/peer todo add "buy milk" --due 2026-10-20 --config data-a/config.toml`
+
+Within ~1 s terminal 1 prints `picked up local edit to todos` (the running peer noticed the file changed), and terminal 2 prints `synced todos from a peer` followed by the list. `target/debug/peer todo list --config data-b/config.toml` shows it too.
+
+Things to try:
+- Stop peer B (Ctrl-C), add two todos on A, start B again: they arrive on reconnect (B's dialer retries with backoff; A's dialer reconnects within 30 s).
+- Delete `data-b/todo.automerge` with B stopped and restart it: B gets the whole doc back from A.
+- Watch the bytes: `todo.automerge` is the output of `Automerge::save()`, the compressed change history.
+
+What happens under the hood: `peer todo add` loads `todo.automerge`, makes the change, and calls `persist::save`, which locks the file, merges what's on disk and writes atomically (`crates/sync/src/persist.rs`). The running `peer run` polls the file's mtime every second (`crates/peer/src/main.rs`), merges it, and calls `SyncNode::local_change()`, which wakes every connection to generate a sync message.

@@ -33,13 +33,31 @@ struct TodoDoc {
 #[derive(Debug)]
 pub enum Error {
     NotFound(String),
+    Invalid(String),
     Automerge(String),
+}
+
+/// `YYYY-MM-DD` with a plausible month/day (not a full calendar check).
+pub fn valid_date(s: &str) -> bool {
+    let b = s.as_bytes();
+    let num = |r: std::ops::Range<usize>| s.get(r).filter(|p| p.bytes().all(|c| c.is_ascii_digit())).and_then(|p| p.parse::<u32>().ok());
+    b.len() == 10 && b[4] == b'-' && b[7] == b'-' && num(0..4).is_some()
+        && num(5..7).is_some_and(|m| (1..=12).contains(&m))
+        && num(8..10).is_some_and(|d| (1..=31).contains(&d))
+}
+
+fn check_due(due: Option<&str>) -> Result<()> {
+    match due {
+        Some(d) if !valid_date(d) => Err(Error::Invalid(format!("due date {d:?}, expected YYYY-MM-DD"))),
+        _ => Ok(()),
+    }
 }
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::NotFound(id) => write!(f, "todo {id} not found"),
+            Error::Invalid(s) => write!(f, "invalid {s}"),
             Error::Automerge(e) => write!(f, "automerge: {e}"),
         }
     }
@@ -148,6 +166,7 @@ fn now_ms() -> i64 {
 
 impl TodoStore for AmTodoStore {
     fn add(&mut self, title: &str, notes: &str, due: Option<&str>) -> Result<Todo> {
+        check_due(due)?;
         let todo = Todo {
             id: uuid::Uuid::now_v7().to_string(),
             title: title.into(),
@@ -162,6 +181,7 @@ impl TodoStore for AmTodoStore {
     }
 
     fn edit(&mut self, id: &str, title: &str, notes: &str, due: Option<&str>) -> Result<()> {
+        check_due(due)?;
         self.modify(id, |t| {
             t.title = title.into();
             t.notes = notes.into();
@@ -217,6 +237,9 @@ mod tests {
         s.delete(&t.id).unwrap();
         assert!(s.list().unwrap().is_empty());
         assert!(matches!(s.edit("nope", "", "", None), Err(Error::NotFound(_))));
+        for bad in ["2026-13-01", "2026-1-01", "26-01-01", "2026-01-32", "２026-01-01", ""] {
+            assert!(matches!(s.add("x", "", Some(bad)), Err(Error::Invalid(_))), "{bad}");
+        }
     }
 
     #[test]
